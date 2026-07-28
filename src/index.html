@@ -11,8 +11,87 @@
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap"
     />
+    <!--
+      起動直後の白画面をなくすための素のCSS。
+      JSバンドルの読み込みを待たずに、この画面だけは即座に描画されます。
+    -->
+    <style>
+      html, body { margin: 0; height: 100%; background: #10283a; }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        color: #f6e6b8;
+        background-color: #10283a;
+        background-image:
+          linear-gradient(rgba(255,255,255,.02) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,.02) 1px, transparent 1px);
+        background-size: 24px 24px;
+        font-family: "DotGothic16", "MS Gothic", monospace;
+      }
+      #boot-splash .boot-mark {
+        width: 76px;
+        height: 76px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 5px;
+        padding: 8px;
+        border: 3px solid #e2bd66;
+        background: #0d2639;
+        box-shadow: 6px 6px 0 #081722;
+      }
+      #boot-splash .boot-mark i { display: block; animation: boot-blink 1.2s steps(2) infinite; }
+      #boot-splash .boot-mark i:nth-child(1) { background: #f0bd55; animation-delay: 0s; }
+      #boot-splash .boot-mark i:nth-child(2) { background: #65b7d8; animation-delay: .15s; }
+      #boot-splash .boot-mark i:nth-child(3) { background: #e1775b; animation-delay: .45s; }
+      #boot-splash .boot-mark i:nth-child(4) { background: #78b56c; animation-delay: .3s; }
+      #boot-splash h1 {
+        margin: 0;
+        font: 700 26px/1 Consolas, monospace;
+        letter-spacing: 3px;
+        text-shadow: 3px 3px 0 #071722;
+      }
+      #boot-splash p {
+        margin: 8px 0 0;
+        color: #7f97a3;
+        font: 700 10px/1 Consolas, monospace;
+        letter-spacing: 3px;
+      }
+      #boot-splash .boot-bar {
+        width: 240px;
+        height: 14px;
+        overflow: hidden;
+        border: 2px solid #0a1b28;
+        background: #16394f;
+        box-shadow: inset 0 0 0 1px #2f6384;
+      }
+      #boot-splash .boot-bar i {
+        display: block;
+        width: 40%;
+        height: 100%;
+        background: repeating-linear-gradient(90deg, #f0bd55 0 6px, #d39a38 6px 12px);
+        animation: boot-slide 1.1s linear infinite;
+      }
+      #boot-splash small { color: #9db4bd; font-size: 11px; letter-spacing: 1px; }
+      @keyframes boot-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+      @keyframes boot-blink { 50% { opacity: .3; } }
+    </style>
   </head>
   <body>
+    <div id="boot-splash">
+      <span class="boot-mark"><i></i><i></i><i></i><i></i></span>
+      <div style="text-align: center">
+        <h1>PIXEL CODEX STUDIO</h1>
+        <p>AGENT DEVELOPMENT COMPANY</p>
+      </div>
+      <span class="boot-bar"><i></i></span>
+      <small>オフィスを開いています…</small>
+    </div>
     <div id="root"></div>
   </body>
 </html>

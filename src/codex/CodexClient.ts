@@ -18,6 +18,21 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+/** 添付のうち、Codexへ実際に送る最小限の情報。 */
+export interface TurnAttachment {
+  path: string;
+  kind: 'image' | 'file';
+}
+
+/**
+ * 古いCodexは知らない入力の種類を拒むので、そのときは文章だけで送り直します。
+ * サブエージェントへの直接入力を断られた場合はやり直しても同じなので除きます。
+ */
+function isUnsupportedInput(error: Error): boolean {
+  if (/sub-?agent|multi-?agent|direct app-server input/i.test(error.message)) return false;
+  return /unknown|unrecognized|invalid|unexpected|variant|input|localImage/i.test(error.message);
+}
+
 export class CodexClient extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private sequence = 0;
@@ -28,8 +43,16 @@ export class CodexClient extends EventEmitter {
     return Boolean(this.child && !this.child.killed);
   }
 
+  /** The app-server we spawned ourselves, so it is never offered up for killing. */
+  get pid(): number | undefined {
+    return this.child?.pid;
+  }
+
   async start(preferredExecutable?: string): Promise<CodexExecutable> {
-    if (this.running) throw new Error('Codex App Serverは既に起動しています。');
+    // 接続はサーバー起動とスレッド作成の2段階なので、後半で失敗すると
+    // 子プロセスだけが残ります。それを理由に再接続を拒むと復帰できなく
+    // なるため、残っていれば黙って片付けてから起動しなおします。
+    if (this.child) this.stop();
 
     const selected = await findCodexExecutable(preferredExecutable);
     const child = spawn(selected.executable, ['app-server'], {
@@ -59,7 +82,7 @@ export class CodexClient extends EventEmitter {
       clientInfo: {
         name: 'pixel_codex',
         title: 'Pixel Codex',
-        version: '0.1.3',
+        version: '0.1.4',
       },
       capabilities: {},
     });
@@ -67,33 +90,94 @@ export class CodexClient extends EventEmitter {
     return selected;
   }
 
-  async startThread(cwd: string): Promise<{ threadId: string }> {
-    const result = (await this.request('thread/start', {
+  /**
+   * Older Codex builds reject unknown `thread/start` parameters, so the model
+   * and reasoning-effort settings are dropped one at a time rather than failing
+   * the whole connection.
+   */
+  async startThread(
+    cwd: string,
+    options: { model?: string; effort?: string } = {},
+  ): Promise<{ threadId: string }> {
+    const base: Record<string, unknown> = {
       cwd,
       approvalPolicy: 'on-request',
       sandbox: 'workspace-write',
-    })) as Record<string, unknown>;
-    const thread = result?.thread as Record<string, unknown> | undefined;
-    const threadId = String(thread?.id ?? result?.threadId ?? '');
-    if (!threadId) throw new Error('CodexからthreadIdが返されませんでした。');
-    return { threadId };
+    };
+    const attempts: Array<Record<string, unknown>> = [];
+    if (options.model && options.effort) {
+      attempts.push({ ...base, model: options.model, effort: options.effort });
+    }
+    if (options.model) attempts.push({ ...base, model: options.model });
+    attempts.push(base);
+
+    let lastError: Error | undefined;
+    for (const params of attempts) {
+      try {
+        const result = (await this.request('thread/start', params)) as Record<string, unknown>;
+        const thread = result?.thread as Record<string, unknown> | undefined;
+        const threadId = String(thread?.id ?? result?.threadId ?? '');
+        if (!threadId) throw new Error('CodexからthreadIdが返されませんでした。');
+        return { threadId };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (!this.running) break;
+        // Only a rejected parameter is worth retrying with a smaller payload;
+        // a bad cwd or a crashed server would just fail three times over.
+        const retryable = /unknown|unrecognized|invalid|unexpected|param|field|model|effort/i;
+        if (!retryable.test(lastError.message)) break;
+      }
+    }
+    throw lastError ?? new Error('スレッドを開始できませんでした。');
   }
 
-  async sendTask(threadId: string, text: string): Promise<{ turnId?: string }> {
-    const result = (await this.request('turn/start', {
-      threadId,
-      input: [{ type: 'text', text }],
-    })) as Record<string, unknown>;
+  async sendTask(
+    threadId: string,
+    text: string,
+    attachments: TurnAttachment[] = [],
+  ): Promise<{ turnId?: string }> {
+    const result = (await this.sendInput(
+      'turn/start',
+      { threadId },
+      text,
+      attachments,
+    )) as Record<string, unknown>;
     const turn = result?.turn as Record<string, unknown> | undefined;
     return { turnId: String(turn?.id ?? result?.turnId ?? '') || undefined };
   }
 
-  async steerAgent(threadId: string, turnId: string, text: string): Promise<void> {
-    await this.request('turn/steer', {
-      threadId,
-      expectedTurnId: turnId,
-      input: [{ type: 'text', text }],
-    });
+  /**
+   * 使用量の枠（残り何％使えるか）。対応していないCodexでは失敗するので、
+   * 呼び出し側で undefined として扱えるようにしています。
+   */
+  async readRateLimits(): Promise<unknown> {
+    return this.request('account/rateLimits/read', {});
+  }
+
+  async steerAgent(
+    threadId: string,
+    turnId: string,
+    text: string,
+    attachments: TurnAttachment[] = [],
+  ): Promise<void> {
+    try {
+      await this.sendInput(
+        'turn/steer',
+        { threadId, expectedTurnId: turnId },
+        text,
+        attachments,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Codex refuses direct input to sub-agent threads. The renderer catches
+      // this marker and relays the instruction through the root thread instead.
+      if (/sub-?agent|multi-?agent|direct app-server input/i.test(message)) {
+        throw new Error(
+          'SUBAGENT_DIRECT_INPUT_BLOCKED: このエージェントには直接指示を送れません。',
+        );
+      }
+      throw error;
+    }
   }
 
   async interruptAgent(threadId: string, turnId: string): Promise<void> {
@@ -132,6 +216,38 @@ export class CodexClient extends EventEmitter {
     child?.kill();
     this.serverRequests.clear();
     this.rejectPending(new Error('Codex App Serverを停止しました。'));
+  }
+
+  /**
+   * 文章と添付をまとめて送ります。画像はモデルが直接見られるように画像として
+   * 添え、それ以外のファイルは本文にパスが書いてあるのでCodex側が開きます。
+   * 画像入力に対応していないCodexだった場合は、文章だけで送り直します。
+   */
+  private async sendInput(
+    method: string,
+    base: Record<string, unknown>,
+    text: string,
+    attachments: TurnAttachment[],
+  ): Promise<unknown> {
+    const images = attachments
+      .filter((attachment) => attachment.kind === 'image')
+      .map((attachment) => ({ type: 'localImage', path: attachment.path }));
+    if (images.length) {
+      try {
+        return await this.request(method, {
+          ...base,
+          input: [{ type: 'text', text }, ...images],
+        });
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (!this.running || !isUnsupportedInput(failure)) throw failure;
+        this.emit(
+          'diagnostic',
+          'このCodexは画像の添付に対応していないため、ファイルの場所だけを伝えました。',
+        );
+      }
+    }
+    return this.request(method, { ...base, input: [{ type: 'text', text }] });
   }
 
   private request(method: string, params: unknown): Promise<unknown> {

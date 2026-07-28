@@ -1,59 +1,32 @@
 import Phaser from 'phaser';
 
 import { useAgentStore } from '../stores/agentStore';
-import type { AgentState, AgentStatus } from '../types';
+import type { AgentState } from '../types';
 import { AgentSprite } from './AgentSprite';
-import { RETRO_FONT } from './fonts';
-
-/**
- * The office is a straight top-down view laid out on a square grid.
- * Every piece of furniture snaps to whole tiles (a desk is 2x1, a locker 1x2),
- * so the floor reads like a tile map rather than a faked perspective.
- */
-const TILE = 40;
-const COLUMNS = 25;
-const ROWS = 15;
-
-const px = (tile: number): number => tile * TILE;
-const center = (tile: number, span = 1): number => (tile + span / 2) * TILE;
-
-interface Zone {
-  label: string;
-  col: number;
-  row: number;
-  cols: number;
-  rows: number;
-  floor: number;
-  accent: number;
-}
-
-const zones: Zone[] = [
-  { label: '企画会議室', col: 1, row: 1, cols: 7, rows: 5, floor: 0x9fc4cc, accent: 0x37788a },
-  { label: '開発チーム', col: 9, row: 1, cols: 7, rows: 6, floor: 0xd8ac8b, accent: 0xb4573a },
-  { label: '資料・研究室', col: 17, row: 1, cols: 7, rows: 5, floor: 0xa9c79c, accent: 0x54804c },
-  { label: 'テストラボ', col: 17, row: 7, cols: 7, rows: 5, floor: 0xa3aac6, accent: 0x56658f },
-  { label: '休憩スペース', col: 1, row: 8, cols: 6, rows: 6, floor: 0xe0c58c, accent: 0xa76a3a },
-  { label: '緊急対応デスク', col: 8, row: 11, cols: 8, rows: 3, floor: 0xd7b3a4, accent: 0x9c4a3c },
-  { label: '承認カウンター', col: 17, row: 12, cols: 7, rows: 2, floor: 0xe3cf9a, accent: 0xb98130 },
-];
-
-/** Where an agent stands for each status, in tile coordinates. */
-const stations: Record<AgentStatus, { col: number; row: number }> = {
-  idle: { col: 2, row: 12 },
-  planning: { col: 3, row: 4 },
-  researching: { col: 19, row: 3 },
-  coding: { col: 10, row: 3 },
-  running: { col: 19, row: 9 },
-  approval: { col: 19, row: 13 },
-  done: { col: 4, row: 10 },
-  error: { col: 11, row: 12 },
-};
+import { RETRO_FONT, textResolutionFor } from './fonts';
+import {
+  buildWalkableGrid,
+  center,
+  COLUMNS,
+  entrance,
+  furniture,
+  px,
+  ROWS,
+  stationFor,
+  TILE,
+  zones,
+  type Furniture,
+  type Tile,
+  type Zone,
+} from './officeLayout';
+import { findFreeTile, findPath, tileKey } from './pathfinding';
 
 export class OfficeScene extends Phaser.Scene {
   private sprites = new Map<string, AgentSprite>();
   private unsubscribe?: () => void;
   /** True between `create()` and shutdown. `sys.isActive()` is still false during create. */
   private live = false;
+  private walkable: boolean[][] = buildWalkableGrid();
 
   constructor() {
     super('office');
@@ -61,10 +34,11 @@ export class OfficeScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor('#1d2b33');
-    // Render the 1000x600 office into a 2x framebuffer. The browser then
-    // downsamples it, keeping Phaser text crisp on high-DPI/large windows.
-    this.cameras.main.setZoom(2);
-    this.cameras.main.centerOn(px(COLUMNS) / 2, px(ROWS) / 2);
+    // The framebuffer is sized to the panel's real device pixels, so matching
+    // the zoom to it draws the office 1:1 — no resampling, no blurred text.
+    this.applyCameraFit();
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.applyCameraFit, this);
+    this.walkable = buildWalkableGrid();
     this.drawOffice();
     this.live = true;
     this.syncAgents(useAgentStore.getState().agents, useAgentStore.getState().selectedAgentId);
@@ -89,15 +63,25 @@ export class OfficeScene extends Phaser.Scene {
 
   private teardownStoreSubscription(): void {
     this.live = false;
+    this.scale.off(Phaser.Scale.Events.RESIZE, this.applyCameraFit, this);
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.sprites.clear();
   }
 
+  /** Fits the fixed 1000x600 world into whatever framebuffer we were given. */
+  private applyCameraFit(): void {
+    const worldWidth = px(COLUMNS);
+    const worldHeight = px(ROWS);
+    const zoom = Math.min(this.scale.width / worldWidth, this.scale.height / worldHeight);
+    this.cameras.main.setZoom(zoom || 1);
+    this.cameras.main.centerOn(worldWidth / 2, worldHeight / 2);
+  }
+
   private drawOffice(): void {
     this.drawFloorAndWalls();
     for (const zone of zones) this.drawZone(zone);
-    this.drawFurniture();
+    for (const piece of furniture) this.drawFurniture(piece);
     for (const zone of zones) {
       this.roomLabel(zone.col, zone.row, zone.label, zone.accent);
     }
@@ -132,7 +116,7 @@ export class OfficeScene extends Phaser.Scene {
       graphics.lineBetween(px(COLUMNS - 1), px(row), px(COLUMNS), px(row));
     }
 
-    this.entrance(11, ROWS - 1, 3);
+    this.drawEntrance(entrance.col, entrance.row, entrance.cols);
   }
 
   private drawZone(zone: Zone): void {
@@ -150,65 +134,64 @@ export class OfficeScene extends Phaser.Scene {
       .strokeRect(px(zone.col), px(zone.row), px(zone.cols), px(zone.rows));
   }
 
-  private drawFurniture(): void {
-    // 企画会議室（1行目の左端は部屋名プレートのために空けておく）
-    this.meetingTable(3, 2, 4, 2);
-    this.chair(3, 1, 0x37788a, 'down');
-    this.chair(4, 1, 0x37788a, 'down');
-    this.chair(5, 1, 0x37788a, 'down');
-    this.chair(6, 1, 0x37788a, 'down');
-    this.chair(3, 4, 0x37788a, 'up');
-    this.chair(4, 4, 0x37788a, 'up');
-    this.chair(5, 4, 0x37788a, 'up');
-    this.chair(6, 4, 0x37788a, 'up');
-    this.whiteboard(7, 2, 1, 2);
-    this.plant(1, 4);
-
-    // 開発チーム
-    this.desk(9, 2, 0xe1775b);
-    this.desk(12, 2, 0x65b7d8);
-    this.desk(9, 4, 0xf0bd55);
-    this.desk(12, 4, 0xb58bd4);
-    this.chair(9, 3, 0xb4573a, 'up');
-    this.chair(12, 3, 0xb4573a, 'up');
-    this.chair(9, 5, 0xb4573a, 'up');
-    this.chair(12, 5, 0xb4573a, 'up');
-    this.locker(15, 1);
-    this.locker(15, 4);
-    this.boxStack(14, 6);
-
-    // 資料・研究室（棚は右奥に寄せ、調査担当が立つ中央は空けておく）
-    this.bookshelf(21, 2);
-    this.bookshelf(22, 2);
-    this.filingCabinet(23, 2);
-    this.desk(18, 4, 0x54804c);
-    this.chair(18, 5, 0x54804c, 'up');
-    this.plant(17, 2);
-    this.plant(22, 4);
-
-    // テストラボ
-    this.desk(18, 8, 0x75d38e);
-    this.desk(21, 8, 0x75d38e);
-    this.chair(18, 9, 0x56658f, 'up');
-    this.chair(21, 9, 0x56658f, 'up');
-    this.serverRack(17, 10);
-    this.serverRack(23, 7);
-
-    // 休憩スペース
-    this.sofa(1, 9, 3);
-    this.lowTable(1, 11, 2);
-    this.vendingMachine(5, 8);
-    this.plant(6, 12);
-    this.plant(1, 13);
-
-    // 緊急対応デスク
-    this.desk(9, 12, 0xe65d68);
-    this.chair(9, 13, 0x9c4a3c, 'up');
-    this.boxStack(13, 12);
-
-    // 承認カウンター
-    this.counter(20, 12, 3);
-    this.noticeBoard(23, 12, 1, 1);
+  /** Every piece of furniture is declared in `officeLayout`, so drawing is a lookup. */
+  private drawFurniture(piece: Furniture): void {
+    switch (piece.kind) {
+      case 'desk':
+      case 'deskWide':
+        this.desk(piece.col, piece.row, piece.cols, piece.accent ?? 0x65b7d8);
+        break;
+      case 'chair':
+        this.chair(piece.col, piece.row, piece.accent ?? 0x37788a, piece.facing ?? 'up');
+        break;
+      case 'meetingTable':
+        this.meetingTable(piece.col, piece.row, piece.cols, piece.rows);
+        break;
+      case 'whiteboard':
+        this.whiteboard(piece.col, piece.row, piece.cols, piece.rows);
+        break;
+      case 'noticeBoard':
+        this.noticeBoard(piece.col, piece.row, piece.cols, piece.rows);
+        break;
+      case 'progressBoard':
+        this.progressBoard(piece.col, piece.row, piece.cols, piece.rows);
+        break;
+      case 'locker':
+        this.locker(piece.col, piece.row);
+        break;
+      case 'bookshelf':
+        this.bookshelf(piece.col, piece.row);
+        break;
+      case 'filingCabinet':
+        this.filingCabinet(piece.col, piece.row);
+        break;
+      case 'serverRack':
+        this.serverRack(piece.col, piece.row);
+        break;
+      case 'counter':
+        this.counter(piece.col, piece.row, piece.cols);
+        break;
+      case 'sofa':
+        this.sofa(piece.col, piece.row, piece.cols);
+        break;
+      case 'lowTable':
+        this.lowTable(piece.col, piece.row, piece.cols);
+        break;
+      case 'vendingMachine':
+        this.vendingMachine(piece.col, piece.row);
+        break;
+      case 'plant':
+        this.plant(piece.col, piece.row);
+        break;
+      case 'boxStack':
+        this.boxStack(piece.col, piece.row);
+        break;
+      case 'safe':
+        this.safe(piece.col, piece.row);
+        break;
+      default:
+        break;
+    }
   }
 
   private addCrispText(
@@ -219,7 +202,7 @@ export class OfficeScene extends Phaser.Scene {
   ): Phaser.GameObjects.Text {
     const label = this.add.text(x, y, text, {
       ...style,
-      resolution: Math.max(2, Math.ceil(window.devicePixelRatio || 1)),
+      resolution: textResolutionFor(this),
     });
     label.texture.setFilter(Phaser.Textures.FilterMode.LINEAR);
     return label;
@@ -239,7 +222,7 @@ export class OfficeScene extends Phaser.Scene {
     }).setDepth(5);
   }
 
-  private entrance(col: number, row: number, cols: number): void {
+  private drawEntrance(col: number, row: number, cols: number): void {
     const graphics = this.add.graphics();
     graphics.fillStyle(0x8c6a45, 1).fillRect(px(col), px(row), px(cols), TILE);
     graphics.fillStyle(0xbd9159, 1).fillRect(px(col) + 4, px(row) + 4, px(cols) - 8, TILE - 8);
@@ -252,12 +235,12 @@ export class OfficeScene extends Phaser.Scene {
     }).setOrigin(0.5);
   }
 
-  /** A desk is always 2x1 tiles: monitor at the back edge, keyboard at the front. */
-  private desk(col: number, row: number, accent: number): void {
+  /** A desk is `cols` tiles wide: monitor at the back edge, keyboard at the front. */
+  private desk(col: number, row: number, cols: number, accent: number): void {
     const graphics = this.add.graphics().setDepth(2);
     const x = px(col);
     const y = px(row);
-    const width = TILE * 2;
+    const width = px(cols);
     graphics.fillStyle(0x6d4a2b, 1).fillRect(x, y, width, TILE);
     graphics.fillStyle(0xa97644, 1).fillRect(x + 3, y + 3, width - 6, TILE - 6);
     graphics.lineStyle(2, 0x54371f, 1).strokeRect(x, y, width, TILE);
@@ -274,6 +257,10 @@ export class OfficeScene extends Phaser.Scene {
     graphics.lineStyle(1, 0xbfae8b, 1).strokeRect(x + 50, y + 8, 18, 14);
     graphics.fillStyle(0xd9603f, 1).fillCircle(x + 68, y + 29, 6);
     graphics.fillStyle(0xf3c8a5, 1).fillCircle(x + 68, y + 29, 3);
+    if (cols > 2) {
+      graphics.fillStyle(0x2c3b42, 1).fillRect(x + width - 34, y + 9, 24, 18);
+      graphics.fillStyle(0x9fd7e4, 1).fillRect(x + width - 30, y + 12, 16, 12);
+    }
   }
 
   /** 1x1 chair. `facing` marks which edge the backrest sits on. */
@@ -385,6 +372,31 @@ export class OfficeScene extends Phaser.Scene {
     graphics.fillStyle(0x65b7d8, 1).fillRect(x + 8, y + 24, 25, 7);
   }
 
+  /** 進行表の掲示板。ロードマップが貼り出される場所として描いています。 */
+  private progressBoard(col: number, row: number, cols: number, rows: number): void {
+    const graphics = this.add.graphics().setDepth(2);
+    const x = px(col);
+    const y = px(row);
+    const width = px(cols);
+    const height = px(rows);
+    graphics.fillStyle(0x3c2b1b, 1).fillRect(x, y, width, height);
+    graphics.fillStyle(0x1f4a3c, 1).fillRect(x + 4, y + 4, width - 8, height - 8);
+    graphics.lineStyle(2, 0x8a6a3f, 1).strokeRect(x + 4, y + 4, width - 8, height - 8);
+    const rowCount = Math.max(2, Math.floor((height - 22) / 11));
+    for (let line = 0; line < rowCount; line += 1) {
+      const lineY = y + 14 + line * 11;
+      graphics.fillStyle(0xf0e6c0, 0.85).fillRect(x + 10, lineY, 6, 5);
+      graphics.fillStyle(0xdfd7b4, 0.7).fillRect(x + 19, lineY + 1, width - 32, 3);
+    }
+    if (cols > 1) {
+      this.addCrispText(x + width / 2, y + 8, '進行表', {
+        fontFamily: RETRO_FONT,
+        fontSize: '9px',
+        color: '#ffe9a8',
+      }).setOrigin(0.5, 0).setDepth(3);
+    }
+  }
+
   private counter(col: number, row: number, cols: number): void {
     const graphics = this.add.graphics().setDepth(2);
     const x = px(col);
@@ -455,6 +467,18 @@ export class OfficeScene extends Phaser.Scene {
     graphics.fillStyle(0xe2c185, 1).fillRect(x + TILE / 2 - 3, y + 3, 6, TILE - 6);
   }
 
+  /** 経理室の金庫。トークン費用の管理を担当する部屋の目印です。 */
+  private safe(col: number, row: number): void {
+    const graphics = this.add.graphics().setDepth(2);
+    const x = px(col);
+    const y = px(row);
+    graphics.fillStyle(0x3a3346, 1).fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+    graphics.lineStyle(2, 0x231f2e, 1).strokeRect(x + 3, y + 3, TILE - 6, TILE - 6);
+    graphics.fillStyle(0x5b5175, 1).fillRect(x + 7, y + 7, TILE - 14, TILE - 14);
+    graphics.fillStyle(0xf0bd55, 1).fillCircle(x + TILE / 2, y + TILE / 2, 5);
+    graphics.fillStyle(0x231f2e, 1).fillRect(x + TILE / 2 - 1, y + TILE / 2 - 7, 2, 14);
+  }
+
   private syncAgents(agents: AgentState[], selectedId: string): void {
     if (!this.live) return;
     const live = new Set(agents.map((agent) => agent.id));
@@ -465,24 +489,65 @@ export class OfficeScene extends Phaser.Scene {
       }
     }
 
-    // Agents queue up on whole tiles so nobody overlaps and everyone stays on grid.
-    const perStatus = new Map<AgentStatus, number>();
-    agents.forEach((agent) => {
-      const slot = perStatus.get(agent.status) ?? 0;
-      perStatus.set(agent.status, slot + 1);
-      const station = stations[agent.status];
-      const col = Phaser.Math.Clamp(station.col + (slot % 3) - 1, 1, COLUMNS - 2);
-      const row = Phaser.Math.Clamp(station.row + Math.floor(slot / 3), 1, ROWS - 2);
+    // 目的タイルは先に全員ぶん決めます。こうすることで、同じ席を二人が
+    // 取り合ったり、すでに座っている人の上に重なったりしなくなります。
+    const claimed = new Set<number>();
+    const targets = new Map<string, Tile>();
+    for (const agent of agents) {
+      const preferred = stationFor(agent.status, agent.duty);
+      const target = findFreeTile(this.walkable, preferred, claimed);
+      claimed.add(tileKey(target.col, target.row));
+      targets.set(agent.id, target);
+    }
 
+    for (const agent of agents) {
+      const target = targets.get(agent.id) as Tile;
       let sprite = this.sprites.get(agent.id);
       if (!sprite) {
-        sprite = new AgentSprite(this, agent, center(11, 3), center(ROWS - 2));
+        // 新入社員は入口から歩いて入ってきます。
+        const doorTile = { col: entrance.col + 1, row: entrance.row - 1 };
+        sprite = new AgentSprite(this, agent, doorTile);
         sprite.on('agent-selected', (id: string) => useAgentStore.getState().selectAgent(id));
         this.sprites.set(agent.id, sprite);
       }
       sprite.updateAgent(agent);
       sprite.setSelected(agent.id === selectedId);
-      sprite.walkTo(center(col), center(row));
-    });
+      this.routeTo(sprite, agent.id, target, targets);
+    }
+  }
+
+  /** 他の社員を障害物として避けながら、目的タイルまでの経路を渡します。 */
+  private routeTo(
+    sprite: AgentSprite,
+    agentId: string,
+    target: Tile,
+    targets: Map<string, Tile>,
+  ): void {
+    const from = sprite.currentTile;
+    const already = sprite.targetTile;
+    if (already.col === target.col && already.row === target.row) return;
+    if (from.col === target.col && from.row === target.row) return;
+
+    const blocked = new Set<number>();
+    for (const [otherId, otherSprite] of this.sprites) {
+      if (otherId === agentId) continue;
+      // 立ち止まっている人は動かないので確実な障害物。歩いている人は
+      // すれ違えるように、目的地だけを避けます。
+      const otherTarget = targets.get(otherId) ?? otherSprite.targetTile;
+      blocked.add(tileKey(otherTarget.col, otherTarget.row));
+      if (!otherSprite.walking) {
+        blocked.add(tileKey(otherSprite.currentTile.col, otherSprite.currentTile.row));
+      }
+    }
+
+    const path =
+      findPath(this.walkable, from, target, { blocked })
+      // 同僚に囲まれて通れないときは、家具だけを避けて通ります。
+      ?? findPath(this.walkable, from, target);
+    if (!path) {
+      sprite.snapTo(target);
+      return;
+    }
+    sprite.walkPath(path);
   }
 }

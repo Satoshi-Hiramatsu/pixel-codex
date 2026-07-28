@@ -1,6 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  AttachmentTray,
+  attachmentNote,
+  attachmentSummary,
+  useAttachments,
+} from './AttachmentTray';
+import {
+  estimateAllPlans,
   findPlan,
   formatTokens,
   jpyCost,
@@ -9,9 +16,22 @@ import {
   splitYen,
   totalTokens,
 } from './costs';
+import { characterPortrait } from './game/characterSheet';
 import { PhaserCanvas } from './game/PhaserCanvas';
+import { effortOptions, modelLabel, modelOptions, resolveModelId } from './models';
 import { useAgentStore } from './stores/agentStore';
-import type { AgentProfile, AgentState, WorkspaceEntry } from './types';
+import type {
+  AgentProfile,
+  AgentState,
+  Attachment,
+  CodexProcessInfo,
+  RateLimitWindow,
+  RepoStatus,
+  RoadmapStep,
+  SaveMeta,
+  SaveSlot,
+  WorkspaceEntry,
+} from './types';
 
 const agentColors = [0xf0bd55, 0x65b7d8, 0xe1775b, 0x78b56c, 0xb58bd4, 0xe09cb2];
 const recentWorkspacesKey = 'pixel-codex-recent-workspaces';
@@ -23,10 +43,121 @@ const statusLabels: Record<AgentState['status'], string> = {
   researching: '調査中',
   coding: '実装中',
   running: '実行中',
+  accounting: '記帳中',
   approval: '承認待ち',
   done: '完了',
   error: 'エラー',
 };
+
+const dutyLabels: Record<AgentState['duty'], string> = {
+  director: '統括本部',
+  planner: '企画会議室',
+  coder: '開発室',
+  researcher: '資料室',
+  tester: 'テストラボ',
+  reviewer: '企画会議室',
+  designer: '開発室',
+  accountant: '経理室',
+  writer: '資料室',
+  general: 'フロア',
+};
+
+/** セーブ一覧での見せ方。どれも同じようにロードできます。 */
+const saveKindLabels: Record<SaveSlot['kind'], { tag: string; note: string }> = {
+  save: { tag: 'SAVE', note: '手動でセーブしたデータです' },
+  auto: { tag: 'AUTO', note: 'ロードの直前に自動で取った控えです。ロードをやり直せます' },
+  load: { tag: 'LOAD', note: 'ロードした操作の記録です' },
+  other: { tag: 'LOG', note: 'アプリ以外で作られた記録です' },
+};
+
+const roadmapStatusLabels = {
+  pending: '未着手',
+  active: '作業中',
+  done: '完了',
+} as const;
+
+function RoadmapMilestones({ steps }: { steps: RoadmapStep[] }): React.JSX.Element {
+  const visibleSteps = steps.length
+    ? steps
+    : [
+        { id: 'placeholder-1', title: '受付', status: 'pending' as const },
+        { id: 'placeholder-2', title: '計画', status: 'pending' as const },
+        { id: 'placeholder-3', title: '完了', status: 'pending' as const },
+      ];
+  return (
+    <div className={`roadmap-milestones ${steps.length ? '' : 'empty'}`} aria-label="工程マイルストーン">
+      {visibleSteps.map((step, index) => (
+        <div className={`roadmap-milestone ${step.status}`} key={step.id}>
+          <i aria-hidden="true">{step.status === 'done' ? '✓' : index + 1}</i>
+          <small title={step.title}>{step.title}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatElapsed(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return '1分未満';
+  if (minutes < 60) return `${minutes}分`;
+  return `${Math.floor(minutes / 60)}時間${minutes % 60}分`;
+}
+
+/** 使用量の枠がひとまわりする長さを「5時間」「1週間」のように言い換えます。 */
+function formatWindow(minutes?: number): string {
+  if (!minutes) return '';
+  if (minutes < 60) return `${minutes}分`;
+  if (minutes < 1440) return `${Math.round(minutes / 60)}時間`;
+  const days = Math.round(minutes / 1440);
+  return days % 7 === 0 ? `${days / 7}週間` : `${days}日`;
+}
+
+/** 「あと◯時間で回復」。もう過ぎているときは、そのまま回復済みと伝えます。 */
+function formatReset(resetsAt?: number): string {
+  if (!resetsAt) return '';
+  const remaining = resetsAt - Date.now();
+  if (remaining <= 0) return 'まもなく回復';
+  const minutes = Math.ceil(remaining / 60_000);
+  if (minutes < 60) return `あと${minutes}分で回復`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `あと${hours}時間で回復`;
+  return `あと${Math.round(hours / 24)}日で回復`;
+}
+
+/** 残量メーター1本ぶんの表示内容。 */
+function usageRow(
+  key: string,
+  fallbackLabel: string,
+  window?: RateLimitWindow,
+): { key: string; label: string; remaining: number; tone: string; reset: string } | undefined {
+  if (!window) return undefined;
+  const remaining = Math.max(0, Math.min(100, 100 - window.usedPercent));
+  return {
+    key,
+    label: window.windowDurationMins ? `${formatWindow(window.windowDurationMins)}枠` : fallbackLabel,
+    remaining,
+    tone: remaining <= 10 ? 'critical' : remaining <= 30 ? 'low' : 'ok',
+    reset: formatReset(window.resetsAt),
+  };
+}
+
+/** IPCへ渡すのはパスと種類だけ。プレビュー画像まで送ると無駄に重くなります。 */
+function sendableAttachments(
+  attachments: Attachment[],
+): Array<Pick<Attachment, 'path' | 'kind'>> {
+  return attachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind }));
+}
+
+/**
+ * Ctrl+Enter（macは⌘+Enter）で送信します。日本語変換の確定Enterと
+ * 区別するため、変換中は何もしません。
+ */
+function submitOnHotkey(event: React.KeyboardEvent, send: () => void): void {
+  if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+  if (event.nativeEvent.isComposing) return;
+  event.preventDefault();
+  send();
+}
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -106,11 +237,21 @@ export function App(): React.JSX.Element {
     approval,
     questionRequest,
     agentProfiles,
+    configWarning,
+    clearConfigWarning,
+    roadmap,
+    projectStartedAt,
+    accountingReport,
+    accountingReports,
     usage,
     usageByThread,
     usageUpdatedAt,
+    rateLimits,
+    applyRateLimits,
     costSettings,
+    modelSettings,
     setCostSettings,
+    setModelSettings,
     resetUsage,
     selectAgent,
     setWorkspace,
@@ -126,9 +267,16 @@ export function App(): React.JSX.Element {
     dismissAgentProfile,
     createAgentProfile,
     removeAgentProfile,
+    startProject,
+    narrateProgress,
+    buildAccountingReport,
+    openAccountingReport,
+    applyLoadedSave,
   } = useAgentStore();
   const [task, setTask] = useState('調査、実装、テストを別々のサブエージェントに担当させてください。');
   const [steerText, setSteerText] = useState('');
+  const taskAttachments = useAttachments();
+  const steerAttachments = useAttachments();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [workspaceHistoryOpen, setWorkspaceHistoryOpen] = useState(false);
@@ -138,6 +286,21 @@ export function App(): React.JSX.Element {
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [blackboardOpen, setBlackboardOpen] = useState(false);
   const [payrollOpen, setPayrollOpen] = useState(false);
+  const [roadmapOpen, setRoadmapOpen] = useState(false);
+  const [savesOpen, setSavesOpen] = useState(false);
+  const [saves, setSaves] = useState<SaveSlot[]>([]);
+  const [repoStatus, setRepoStatus] = useState<RepoStatus | null>(null);
+  const [saveLabel, setSaveLabel] = useState('');
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [pendingLoad, setPendingLoad] = useState<SaveSlot | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [modelPanelOpen, setModelPanelOpen] = useState(false);
+  const [conflict, setConflict] = useState<{
+    processes: CodexProcessInfo[];
+    executable?: string;
+    workspace: string;
+  } | null>(null);
   const [staffOpen, setStaffOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryPath, setLibraryPath] = useState('');
@@ -146,16 +309,18 @@ export function App(): React.JSX.Element {
   const [libraryError, setLibraryError] = useState('');
   const [creatingAgent, setCreatingAgent] = useState(false);
   const [agentDraft, setAgentDraft] = useState<
-    Pick<AgentProfile, 'name' | 'job' | 'specialty' | 'personality' | 'color'>
+    Pick<AgentProfile, 'name' | 'job' | 'duty' | 'specialty' | 'personality' | 'color'>
   >({
     name: '',
     job: '',
+    duty: 'coder',
     specialty: '',
     personality: '',
     color: agentColors[1],
   });
   const conversationRef = useRef<HTMLDivElement>(null);
   const autoOpenedReportId = useRef('');
+  const autoOpenedAccountingId = useRef('');
   const initialWorkspace = useRef(recentWorkspaces[0]);
 
   const selected = useMemo(
@@ -209,6 +374,35 @@ export function App(): React.JSX.Element {
         .sort((left, right) => right.yen - left.yen),
     [usageByThread, agents, costSettings],
   );
+  const planEstimates = useMemo(
+    () => estimateAllPlans(usage, costSettings),
+    [usage, costSettings],
+  );
+  const roadmapProgress = useMemo(() => {
+    const steps = roadmap.steps;
+    if (!steps.length) return { percent: 0, done: 0, active: undefined as string | undefined };
+    const done = steps.filter((step) => step.status === 'done').length;
+    const running = steps.filter((step) => step.status === 'active').length;
+    return {
+      percent: Math.round(((done + running * 0.5) / steps.length) * 100),
+      done,
+      active: steps.find((step) => step.status === 'active')?.title,
+    };
+  }, [roadmap]);
+  // 通し番号は手動セーブにだけ振ります（自動セーブやロード記録で番号が飛ぶと
+  // 「何番目のセーブか」が分からなくなるため）。
+  const slotNumbers = useMemo(() => {
+    const numbers = new Map<string, string>();
+    const manual = saves.filter((slot) => slot.kind === 'save');
+    manual.forEach((slot, index) => {
+      numbers.set(slot.commit, String(manual.length - index).padStart(2, '0'));
+    });
+    return numbers;
+  }, [saves]);
+  const directorAgent = useMemo(
+    () => agents.find((agent) => agent.duty === 'director'),
+    [agents],
+  );
   const approvalAgent = useMemo(
     () =>
       approval
@@ -218,6 +412,17 @@ export function App(): React.JSX.Element {
         : undefined,
     [agents, approval],
   );
+  const usageRows = useMemo(
+    () =>
+      [
+        usageRow('primary', '短期の枠', rateLimits?.primary),
+        usageRow('secondary', '長期の枠', rateLimits?.secondary),
+      ].filter((row): row is NonNullable<typeof row> => Boolean(row)),
+    [rateLimits],
+  );
+  // HPバーには短期の枠を出します。長期の枠はその下に細く添えます。
+  const hpMain = usageRows[0];
+  const hpSub = usageRows[1];
   const libraryCrumbs = useMemo(() => {
     const parts = libraryPath.split(/[\\/]/).filter(Boolean);
     return [
@@ -253,14 +458,77 @@ export function App(): React.JSX.Element {
     }
   }, [latestReport]);
 
-  async function connect(executable?: string, targetWorkspace = workspace): Promise<void> {
+  // 会計報告は、経理担当が経理室まで歩いてから開くほうが分かりやすいので少し待ちます。
+  useEffect(() => {
+    if (!accountingReport || autoOpenedAccountingId.current === accountingReport.id) return;
+    autoOpenedAccountingId.current = accountingReport.id;
+    const timer = window.setTimeout(() => setReportOpen(true), 2200);
+    return () => window.clearTimeout(timer);
+  }, [accountingReport]);
+
+  /**
+   * 使用量の枠は、接続直後と1分おきに聞きに行きます。作業中は Codex 側からも
+   * 通知が届くので、これはその補完（開いたまま放置したときの更新）です。
+   */
+  useEffect(() => {
+    if (connection !== 'connected') return undefined;
+    const refresh = (): void => {
+      window.pixelCodex
+        .getRateLimits()
+        .then((payload) => applyRateLimits(payload))
+        .catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    return () => window.clearInterval(timer);
+  }, [connection, applyRateLimits]);
+
+  /**
+   * 指示欄の外にファイルを落としたときに、Electronが画面ごとそのファイルを
+   * 開いてしまうのを防ぎます。
+   */
+  useEffect(() => {
+    const swallow = (event: DragEvent): void => event.preventDefault();
+    window.addEventListener('dragover', swallow);
+    window.addEventListener('drop', swallow);
+    return () => {
+      window.removeEventListener('dragover', swallow);
+      window.removeEventListener('drop', swallow);
+    };
+  }, []);
+
+  // 統括責任者は手が空いているあいだ、進捗と完了予想をつぶやきます。
+  useEffect(() => {
+    if (connection !== 'connected') return undefined;
+    const timer = window.setInterval(() => narrateProgress(), 12_000);
+    return () => window.clearInterval(timer);
+  }, [connection, narrateProgress]);
+
+  /**
+   * 他のCodexが動いていると App Server につなげないので、先に確認します。
+   * 見つかったときは接続せず、ユーザーに切断するかどうかを尋ねます。
+   */
+  async function connect(
+    executable?: string,
+    targetWorkspace = workspace,
+    skipConflictCheck = false,
+  ): Promise<void> {
     if (!targetWorkspace) {
       setNotice('先に作業フォルダを選択してください。');
       return;
     }
+    if (!skipConflictCheck) {
+      const running = await window.pixelCodex.listCodexProcesses().catch(() => []);
+      if (running.length > 0) {
+        setConflict({ processes: running, executable, workspace: targetWorkspace });
+        return;
+      }
+    }
     setBusy(true);
     setNotice('');
     setConnection('connecting', '接続中');
+    // 接続は2段階あるので、どちらで失敗したかを言えるようにしておきます。
+    let step = 'Codexの起動';
     try {
       const result = await window.pixelCodex.startCodex(executable);
       setCodexExecutable(result.executable);
@@ -269,18 +537,52 @@ export function App(): React.JSX.Element {
         `Codex App Serverに接続しました: ${result.version} (${result.executable})`,
         'success',
       );
-      const thread = await window.pixelCodex.startThread(targetWorkspace);
+      step = '作業スレッドの作成';
+      const thread = await window.pixelCodex.startThread(targetWorkspace, {
+        model: resolveModelId(modelSettings),
+        effort: modelSettings.effort,
+      });
       setRootThread(thread.threadId);
       rememberWorkspace(targetWorkspace);
-      addLog('統括エージェントのスレッドを作成しました', 'success', thread.threadId);
+      addLog(
+        `統括責任者のスレッドを作成しました（モデル: ${modelLabel(modelSettings)}）`,
+        'success',
+        thread.threadId,
+      );
     } catch (error) {
       const message = errorMessage(error);
+      // 途中まで起動していると次の接続がぶつかるので、必ず後片付けします。
+      await window.pixelCodex.stopCodex().catch(() => undefined);
       setConnection('error', '接続エラー');
-      setNotice(message);
-      addLog(message, 'error');
+      setNotice(`${step}に失敗しました：${message}`);
+      addLog(`${step}に失敗しました：${message}`, 'error');
     } finally {
       setBusy(false);
     }
+  }
+
+  /** 確認画面で「他を切断して接続」を選んだときの処理。 */
+  async function disconnectOthersAndConnect(): Promise<void> {
+    if (!conflict) return;
+    const target = conflict;
+    setConflict(null);
+    setBusy(true);
+    try {
+      const result = await window.pixelCodex.terminateCodexProcesses(
+        target.processes.map((entry) => entry.pid),
+      );
+      addLog(
+        `他のCodexを${result.stopped.length}件切断しました${
+          result.failed.length ? `（${result.failed.length}件は切断できませんでした）` : ''
+        }`,
+        result.failed.length ? 'warning' : 'success',
+      );
+    } catch (error) {
+      addLog(errorMessage(error), 'error');
+    } finally {
+      setBusy(false);
+    }
+    await connect(target.executable, target.workspace, true);
   }
 
   async function chooseExecutable(): Promise<void> {
@@ -309,7 +611,8 @@ export function App(): React.JSX.Element {
       setWorkspace(selectedPath);
       addLog(`作業フォルダを変更しました: ${selectedPath}`);
       if (shouldReconnect) {
-        await connect(codexExecutable || undefined, selectedPath);
+        // 自分のCodexは今止めたばかりなので、重複確認はやり直しません。
+        await connect(codexExecutable || undefined, selectedPath, true);
       }
     } catch (error) {
       const message = errorMessage(error);
@@ -340,6 +643,104 @@ export function App(): React.JSX.Element {
       window.localStorage.setItem(recentWorkspacesKey, JSON.stringify(next));
       return next;
     });
+  }
+
+  /** いまの状況をセーブデータに書き込むための「そのときの情報」。 */
+  function currentSaveMeta(label: string): SaveMeta {
+    return {
+      label,
+      createdAt: Date.now(),
+      roadmapTitle: roadmap.title || undefined,
+      roadmapDone: roadmap.steps.filter((step) => step.status === 'done').length,
+      roadmapTotal: roadmap.steps.length,
+      deliverables: deliverables.length,
+      tokens: usedTokens,
+      yen: Number(totalYen.toFixed(2)),
+      model: modelLabel(modelSettings),
+      staff: agents.map((agent) => agent.name),
+    };
+  }
+
+  async function refreshSaves(): Promise<void> {
+    if (!workspace) return;
+    setSaveBusy(true);
+    setSaveError('');
+    try {
+      const status = await window.pixelCodex.getRepoStatus(workspace);
+      setRepoStatus(status);
+      setSaves(status.isRepo && status.hasCommits ? await window.pixelCodex.listSaves(workspace) : []);
+    } catch (error) {
+      setSaveError(errorMessage(error));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function openSaves(): Promise<void> {
+    if (!workspace) {
+      setNotice('先に作業フォルダを選択してください。');
+      return;
+    }
+    setSavesOpen(true);
+    await refreshSaves();
+  }
+
+  async function prepareSaves(): Promise<void> {
+    setSaveBusy(true);
+    setSaveError('');
+    try {
+      const status = await window.pixelCodex.initRepo(workspace);
+      setRepoStatus(status);
+      setSaves(await window.pixelCodex.listSaves(workspace));
+      addLog('セーブの準備ができました', 'success');
+    } catch (error) {
+      setSaveError(errorMessage(error));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function createSave(): Promise<void> {
+    const label = saveLabel.trim() || `セーブ ${new Date().toLocaleString('ja-JP')}`;
+    setSaveBusy(true);
+    setSaveError('');
+    try {
+      const next = await window.pixelCodex.createSave(workspace, label, currentSaveMeta(label));
+      setSaves(next);
+      setRepoStatus(await window.pixelCodex.getRepoStatus(workspace));
+      setSaveLabel('');
+      addLog(`セーブしました：${label}`, 'success');
+    } catch (error) {
+      const message = errorMessage(error);
+      setSaveError(message);
+      addLog(message, 'error');
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function confirmLoad(): Promise<void> {
+    if (!pendingLoad) return;
+    const target = pendingLoad;
+    setPendingLoad(null);
+    setSaveBusy(true);
+    setSaveError('');
+    try {
+      const result = await window.pixelCodex.loadSave(workspace, target.commit);
+      setRepoStatus(result.status);
+      setSaves(await window.pixelCodex.listSaves(workspace));
+      if (result.meta) applyLoadedSave(result.meta);
+      else addLog(`「${target.subject}」の状態に戻しました`, 'success');
+      setNotice(
+        `「${target.subject}」の状態に戻しました。直前の状態は「ロード前の自動セーブ」として残してあります。`,
+      );
+    } catch (error) {
+      const message = errorMessage(error);
+      setSaveError(message);
+      addLog(message, 'error');
+    } finally {
+      setSaveBusy(false);
+    }
   }
 
   async function browseLibrary(relativePath = ''): Promise<void> {
@@ -384,8 +785,40 @@ export function App(): React.JSX.Element {
     void openWorkspaceItem(entry.relativePath);
   }
 
-  async function submitTask(event: React.FormEvent): Promise<void> {
-    event.preventDefault();
+  /**
+   * 統括責任者への指示書。自分で手を動かさず、ロードマップを引いて
+   * 担当者へ割り振るように、毎回のお願いに添えて送ります。
+   */
+  function directorBriefing(): string {
+    const director = hiredProfiles.find((profile) => profile.duty === 'director');
+    const team = hiredProfiles.filter(
+      (profile) => profile.duty !== 'director' && profile.duty !== 'accountant',
+    );
+    const lines = [
+      '',
+      '[Pixel Codex 社内ルール]',
+      `あなたはプロジェクト統括責任者「${director?.name ?? '東葛大五郎'}」です。`,
+      '1. まず作業全体のロードマップを作り、番号付きの箇条書きで「ロードマップ」として提示してください。各行の先頭に担当者名を書いてください。',
+      '2. ロードマップは計画ツール（todo/plan）があればそちらにも登録してください。進行表として画面に掲示されます。',
+      '3. 自分では実装せず、下記の担当者をサブエージェントとして起動し、適切に作業を割り振ってください。起動時の依頼文には必ず社員名と役割を明記してください。',
+      '4. 各担当が終わるたびに進捗を短く報告し、最後に全体の完了報告をまとめてください。',
+    ];
+    if (team.length) {
+      lines.push('', '[割り振れる担当者]');
+      lines.push(
+        ...team.map(
+          (profile) =>
+            `- ${profile.name} / ${profile.job}: 得意=${profile.specialty}; 人柄=${profile.personality}`,
+        ),
+      );
+    } else {
+      lines.push('', '※ いま雇用中の担当者がいません。社員名簿から雇用するようユーザーに伝えてください。');
+    }
+    return lines.join('\n');
+  }
+
+  async function submitTask(event?: React.FormEvent): Promise<void> {
+    event?.preventDefault();
     if (!task.trim() || busy) return;
     if (connection !== 'connected') {
       setNotice('先にCodexへ接続してください。現在は画面確認用のデモ表示です。');
@@ -395,29 +828,38 @@ export function App(): React.JSX.Element {
     try {
       let threadId = rootThreadId;
       if (!threadId) {
-        const result = await window.pixelCodex.startThread(workspace);
+        const result = await window.pixelCodex.startThread(workspace, {
+          model: resolveModelId(modelSettings),
+          effort: modelSettings.effort,
+        });
         threadId = result.threadId;
         setRootThread(threadId);
       }
-      const availableTeam = hiredProfiles.filter((profile) => profile.id !== 'manager-profile');
-      const staffingInstruction = availableTeam.length
-        ? [
-            '',
-            '[Pixel Codexの雇用チーム]',
-            '必要な担当だけをサブエージェントとして起動してください。起動時の依頼には社員名と役割を明記してください。',
-            ...availableTeam.map(
-              (profile) =>
-                `- ${profile.name} / ${profile.job}: 得意=${profile.specialty}; 人柄=${profile.personality}`,
-            ),
-          ].join('\n')
-        : '';
-      await window.pixelCodex.sendTask(threadId, `${task.trim()}${staffingInstruction}`);
-      addMessage({ agentId: threadId, role: 'user', text: task.trim() });
-      const managerName = agents.find(
+      const request = task.trim();
+      const attachments = taskAttachments.attachments;
+      startProject(request.split(/\r?\n/)[0].slice(0, 40));
+      await window.pixelCodex.sendTask(
+        threadId,
+        `${request}${attachmentNote(attachments)}${directorBriefing()}`,
+        attachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind })),
+      );
+      addMessage({
+        agentId: threadId,
+        role: 'user',
+        text: `${request}${attachmentSummary(attachments)}`,
+      });
+      const directorName = agents.find(
         (agent) => agent.id === threadId || agent.threadId === threadId,
-      )?.name ?? '企画一郎';
-      addLog(`${managerName}へ新しいタスクを送りました`, 'success', threadId);
+      )?.name ?? '東葛大五郎';
+      addLog(
+        `${directorName}へ新しいタスクを送りました${
+          attachments.length ? `（添付${attachments.length}件）` : ''
+        }`,
+        'success',
+        threadId,
+      );
       setTask('');
+      taskAttachments.clear();
     } catch (error) {
       const message = errorMessage(error);
       setNotice(message);
@@ -427,16 +869,81 @@ export function App(): React.JSX.Element {
     }
   }
 
+  /**
+   * 追加指示。Codexはサブエージェントのスレッドへの直接入力を拒否するので
+   * （"direct app-server input is not allowed for multi-agent v2 sub-agents"）、
+   * 相手が担当者のときは統括責任者あての伝言に切り替えて中継します。
+   * 手が空いていて turn が無いときは、新しいターンとして送ります。
+   */
+  async function relayInstruction(threadId: string, text: string): Promise<void> {
+    const attachments = steerAttachments.attachments;
+    const message = `【${selected?.name ?? '担当者'}への追加指示】${text}${attachmentNote(attachments)}\nこの内容を担当者へ伝えて、作業に反映させてください。`;
+    await window.pixelCodex.sendTask(threadId, message, sendableAttachments(attachments));
+  }
+
   async function steerSelected(): Promise<void> {
-    if (!selected?.threadId || !selected.turnId || !steerText.trim()) return;
+    const text = steerText.trim();
+    if (!selected || !text) return;
+    if (connection !== 'connected') {
+      setNotice('先にCodexへ接続してください。現在は画面確認用のデモ表示です。');
+      return;
+    }
     setBusy(true);
+    const attachments = steerAttachments.attachments;
+    const withFiles = `${text}${attachmentNote(attachments)}`;
+    const logged = `${text}${attachmentSummary(attachments)}`;
     try {
-      await window.pixelCodex.steerAgent(selected.threadId, selected.turnId, steerText.trim());
-      addMessage({ agentId: selected.id, role: 'user', text: steerText.trim() });
-      addLog('追加指示を送りました', 'success', selected.id);
+      const isRootThread = Boolean(selected.threadId) && selected.threadId === rootThreadId;
+      if (selected.virtual) {
+        // 経理担当はCodexのスレッドを持たないので、統括責任者へ回します。
+        if (!rootThreadId) throw new Error('統括責任者のスレッドがまだありません。');
+        await relayInstruction(rootThreadId, text);
+        addLog('経理担当あての指示を統括責任者に伝えました', 'success', selected.id);
+      } else if (isRootThread && selected.turnId) {
+        await window.pixelCodex.steerAgent(
+          selected.threadId as string,
+          selected.turnId,
+          withFiles,
+          sendableAttachments(attachments),
+        );
+        addLog('追加指示を送りました', 'success', selected.id);
+      } else if (isRootThread) {
+        // 手が空いているので、そのまま新しい依頼として送ります。
+        await window.pixelCodex.sendTask(
+          selected.threadId as string,
+          withFiles,
+          sendableAttachments(attachments),
+        );
+        addLog('新しい指示として送りました', 'success', selected.id);
+      } else {
+        if (!rootThreadId) throw new Error('統括責任者のスレッドがまだありません。');
+        await relayInstruction(rootThreadId, text);
+        addLog(
+          `${selected.name}への指示を統括責任者に中継しました`,
+          'success',
+          selected.id,
+        );
+      }
+      addMessage({ agentId: selected.id, role: 'user', text: logged });
       setSteerText('');
+      steerAttachments.clear();
     } catch (error) {
       const message = errorMessage(error);
+      // 直接入力を拒否された場合も、統括責任者ごしにもう一度試します。
+      if (message.includes('SUBAGENT_DIRECT_INPUT_BLOCKED') && rootThreadId) {
+        try {
+          await relayInstruction(rootThreadId, text);
+          addMessage({ agentId: selected.id, role: 'user', text: logged });
+          addLog('直接指示できないため、統括責任者ごしに伝えました', 'warning', selected.id);
+          setSteerText('');
+          steerAttachments.clear();
+          return;
+        } catch (retryError) {
+          setNotice(errorMessage(retryError));
+          addLog(errorMessage(retryError), 'error', selected.id);
+          return;
+        }
+      }
       setNotice(message);
       addLog(message, 'error', selected.id);
     } finally {
@@ -524,6 +1031,7 @@ export function App(): React.JSX.Element {
     setAgentDraft({
       name: '',
       job: '',
+      duty: 'coder',
       specialty: '',
       personality: '',
       color: agentColors[Math.floor(Math.random() * agentColors.length)],
@@ -534,6 +1042,17 @@ export function App(): React.JSX.Element {
   const activeCount = agents.filter((agent) =>
     ['planning', 'researching', 'coding', 'running'].includes(agent.status),
   ).length;
+  const progressWaiting = approval
+    ? { tone: 'attention', text: 'あなたの承認を待っています' }
+    : questionRequest
+      ? { tone: 'attention', text: 'あなたの回答を待っています' }
+      : roadmapProgress.active
+        ? { tone: 'working', text: `作業中：「${roadmapProgress.active}」の完了を待っています` }
+        : activeCount > 0
+          ? { tone: 'working', text: `${activeCount}名が作業を続けています` }
+          : roadmap.steps.length > 0 && roadmapProgress.done === roadmap.steps.length
+            ? { tone: 'done', text: 'すべての工程が完了しました' }
+            : { tone: 'idle', text: connection === 'connected' ? '次の作業開始を待っています' : 'Codexへの接続を待っています' };
 
   return (
     <main className="app-shell">
@@ -590,6 +1109,10 @@ export function App(): React.JSX.Element {
           )}
         </div>
         <div className="game-menu-buttons">
+          <button className="save-button" type="button" title="セーブ／ロード" onClick={() => void openSaves()}>
+            <span>セーブ</span>
+            <strong>▣</strong>
+          </button>
           <button className="library-button" type="button" onClick={() => void showLibrary()}>
             <span>図書館</span>
             <strong>本</strong>
@@ -606,10 +1129,81 @@ export function App(): React.JSX.Element {
             <span>成果物</span>
             <strong>{deliverables.length}</strong>
           </button>
+          <button
+            className={`report-button ${accountingReports.length ? 'has-results' : ''}`}
+            type="button"
+            title={`経理担当の会計報告（保存済み ${accountingReports.length}件）`}
+            onClick={() => {
+              if (!accountingReport && accountingReports[0]) openAccountingReport(accountingReports[0].id);
+              else if (!accountingReport) buildAccountingReport('途中経過の確認');
+              setReportOpen(true);
+            }}
+          >
+            <span>会計報告</span>
+            <strong>{accountingReports.length || '￥'}</strong>
+          </button>
         </div>
         <div className="connection-box">
           <span className={`connection-dot ${connection}`} />
           <div><small>APP SERVER</small><strong>{connectionLabel}</strong></div>
+          <div className="model-switcher">
+            <button
+              className="model-button"
+              type="button"
+              onClick={() => setModelPanelOpen((value) => !value)}
+              title="AIモデルを変更"
+            >
+              <small>AIモデル</small>
+              <strong>{modelLabel(modelSettings)}</strong>
+            </button>
+            {modelPanelOpen && (
+              <section className="model-panel" aria-label="AIモデルの設定">
+                <header>
+                  <strong>AIモデルの設定</strong>
+                  <button type="button" aria-label="閉じる" onClick={() => setModelPanelOpen(false)}>×</button>
+                </header>
+                <label>
+                  つかうモデル
+                  <select
+                    value={modelSettings.modelId}
+                    onChange={(event) => setModelSettings({ modelId: event.target.value })}
+                  >
+                    {modelOptions.map((option) => (
+                      <option key={option.id || 'default'} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <p className="model-note">
+                  {modelSettings.customModelId.trim()
+                    ? '下の手入力が優先されます。'
+                    : modelOptions.find((option) => option.id === modelSettings.modelId)?.note}
+                </p>
+                <label>
+                  考える深さ
+                  <select
+                    value={modelSettings.effort}
+                    onChange={(event) => setModelSettings({ effort: event.target.value })}
+                  >
+                    {effortOptions.map((option) => (
+                      <option key={option.id || 'default'} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  モデル名を直接入力（上級者向け）
+                  <input
+                    value={modelSettings.customModelId}
+                    onChange={(event) => setModelSettings({ customModelId: event.target.value })}
+                    placeholder="例: gpt-5-codex"
+                  />
+                </label>
+                <p className="model-note">
+                  変更は<strong>次に接続したとき</strong>、または新しい作業フォルダに切り替えたときから有効になります。
+                  料金メーターの単価も自動で合わせます。
+                </p>
+              </section>
+            )}
+          </div>
           <button type="button" onClick={() => connect()} disabled={busy || connection === 'connected'}>
             {connection === 'connected' ? '接続済み' : '接続'}
           </button>
@@ -621,6 +1215,18 @@ export function App(): React.JSX.Element {
         <div className="notice" role="alert">
           <span>{notice}</span>
           <button type="button" onClick={() => setNotice('')}>×</button>
+        </div>
+      )}
+
+      {configWarning && (
+        <div className="config-warning" role="alert">
+          <strong>Codexの設定ファイルに問題があります</strong>
+          <span>
+            この状態だと作業スレッドを作れず、接続できません。
+            下の場所を直してから、もう一度「接続」を押してください。
+          </span>
+          <code>{configWarning}</code>
+          <button type="button" onClick={clearConfigWarning}>×</button>
         </div>
       )}
 
@@ -648,9 +1254,82 @@ export function App(): React.JSX.Element {
           <div><dt>入力</dt><dd>{formatTokens(usage.input)}</dd></div>
           <div><dt>出力</dt><dd>{formatTokens(usage.output)}</dd></div>
           <div><dt>合計</dt><dd>{formatTokens(usedTokens)}</dd></div>
+          <div>
+            <dt>取得状態</dt>
+            <dd
+              className={`usage-live ${usageUpdatedAt ? 'active' : 'waiting'}`}
+              title={usageUpdatedAt
+                ? `最終更新 ${new Date(usageUpdatedAt).toLocaleTimeString('ja-JP')}`
+                : '最初のモデル応答後に自動で更新されます'}
+            ><i />{usageUpdatedAt ? 'LIVE' : '待機中'}</dd>
+          </div>
         </dl>
+        {/* AIの使用残量はゲームのHPとして見せます。Codexが枠を教えてくれるときだけ本物の数字が出ます。 */}
+        <section className={`hp-meter ${hpMain ? hpMain.tone : 'unknown'}`} aria-label="HP（AI使用残量）">
+          <div className="hp-plate">
+            <span>HP</span>
+            <small>AI使用残量</small>
+          </div>
+          <div className="hp-body">
+            <div className="hp-main">
+              <div className="hp-bar">
+                <i style={{ width: `${hpMain?.remaining ?? 0}%` }} />
+                <span className="hp-notches" aria-hidden="true" />
+              </div>
+              <strong className="hp-value" aria-live="polite">
+                {hpMain ? Math.round(hpMain.remaining) : '??'}
+                <em>/100</em>
+              </strong>
+            </div>
+            <div className="hp-notes">
+              {hpMain ? (
+                <>
+                  <span className="hp-window">{hpMain.label}</span>
+                  <span className="hp-reset">{hpMain.reset || '回復時刻は未提供'}</span>
+                </>
+              ) : (
+                <span className="hp-window">
+                  {connection === 'connected'
+                    ? 'このプランでは残量が取得できません'
+                    : '接続すると表示されます'}
+                </span>
+              )}
+              {hpSub && (
+                <span className="hp-sub" title={`${hpSub.label}の残量 ${Math.round(hpSub.remaining)}%`}>
+                  <small>{hpSub.label}</small>
+                  <span className="hp-sub-bar">
+                    <i className={hpSub.tone} style={{ width: `${hpSub.remaining}%` }} />
+                  </span>
+                  <b className={hpSub.tone}>{Math.round(hpSub.remaining)}%</b>
+                </span>
+              )}
+            </div>
+          </div>
+        </section>
         <button className="payroll-open" type="button" onClick={() => setPayrollOpen(true)}>
           明細をひらく →
+        </button>
+      </section>
+
+      {/* 進行表：統括責任者が引いたロードマップを、いつでも見える場所に掲示します。 */}
+      <section className="roadmap-bar" aria-label="プロジェクト進行表">
+        <div className="roadmap-plate">
+          <span>ROADMAP</span>
+          <strong>進行表</strong>
+        </div>
+        <div className="roadmap-copy">
+          <strong title={roadmap.title}>{roadmap.title || 'まだ進行表はありません'}</strong>
+          <small className={`roadmap-waiting ${progressWaiting.tone}`}>
+            <i />{progressWaiting.text}
+          </small>
+        </div>
+        <RoadmapMilestones steps={roadmap.steps} />
+        <div className="roadmap-meta">
+          <span>経過 {projectStartedAt ? formatElapsed(Date.now() - projectStartedAt) : '―'}</span>
+          <span>{directorAgent?.name ?? '東葛大五郎'} が進行管理</span>
+        </div>
+        <button className="roadmap-open" type="button" onClick={() => setRoadmapOpen(true)}>
+          進行表をひらく →
         </button>
       </section>
 
@@ -680,7 +1359,13 @@ export function App(): React.JSX.Element {
                     onClick={() => selectAgent(agent.id)}
                   >
                     <span className="roster-number">{String(index + 1).padStart(2, '0')}</span>
-                    <span className="avatar" style={{ '--agent-color': `#${agent.color.toString(16).padStart(6, '0')}` } as React.CSSProperties}><i /></span>
+                    <img
+                      className="roster-avatar"
+                      src={characterPortrait(agent.color)}
+                      alt=""
+                      width={32}
+                      height={40}
+                    />
                     <span className="agent-copy"><strong>{agent.name}</strong><small>{agent.role}</small></span>
                     <span className={`status-dot ${agent.status}`} title={statusLabels[agent.status]} />
                   </button>
@@ -689,9 +1374,30 @@ export function App(): React.JSX.Element {
               <footer><span>● 稼働状況</span><strong>{activeCount}/{agents.length}</strong></footer>
             </section>
           </div>
-          <form className="task-composer" onSubmit={submitTask}>
-            <div className="composer-label"><span>NEW PROJECT</span><small>新しい開発を始める</small></div>
-            <textarea value={task} onChange={(event) => setTask(event.target.value)} rows={2} placeholder="実現したいことを入力…" />
+          <form
+            className={`task-composer ${taskAttachments.dragging ? 'dropping' : ''}`}
+            onSubmit={submitTask}
+            {...taskAttachments.dropHandlers}
+          >
+            <div className="composer-label">
+              <span>NEW PROJECT</span>
+              <small>新しい開発を始める</small>
+              <em className="composer-hotkey">Ctrl + Enter で送信</em>
+            </div>
+            <div className="composer-input">
+              <textarea
+                value={task}
+                onChange={(event) => setTask(event.target.value)}
+                onKeyDown={(event) => submitOnHotkey(event, () => void submitTask())}
+                onPaste={taskAttachments.handlePaste}
+                rows={2}
+                placeholder="実現したいことを入力…（Ctrl+Enterで送信）"
+              />
+              <AttachmentTray
+                box={taskAttachments}
+                hint="ファイルをドロップ、Ctrl+Vでスクショの貼り付けもできます"
+              />
+            </div>
             <button className="primary-button" type="submit" disabled={busy || !task.trim()}>
               {busy ? '送信中…' : '開始 →'}
             </button>
@@ -704,13 +1410,47 @@ export function App(): React.JSX.Element {
               <div className="detail-title"><div><span className="eyebrow">STAFF PROFILE</span><h2>{selected.name}</h2></div><span className={`status-pill ${selected.status}`}>{statusLabels[selected.status]}</span></div>
               <dl>
                 <div><dt>担当</dt><dd>{selected.role}</dd></div>
-                <div><dt>現在の仕事</dt><dd>{selected.task}</dd></div>
-                <div><dt>動作</dt><dd>{selected.activity}</dd></div>
+                <div><dt>いる場所</dt><dd>{dutyLabels[selected.duty]}</dd></div>
+                <div><dt>現在の仕事</dt><dd title={selected.task}>{selected.task}</dd></div>
+                <div><dt>動作</dt><dd title={selected.activity}>{selected.activity}</dd></div>
                 <div><dt>THREAD</dt><dd className="mono" title={selected.threadId}>{shortId(selected.threadId)}</dd></div>
               </dl>
-              <textarea value={steerText} onChange={(event) => setSteerText(event.target.value)} rows={3} placeholder="このエージェントへ追加指示…" disabled={!selected.threadId || !selected.turnId} />
+              <div
+                className={`steer-input ${steerAttachments.dragging ? 'dropping' : ''}`}
+                {...steerAttachments.dropHandlers}
+              >
+                <textarea
+                  value={steerText}
+                  onChange={(event) => setSteerText(event.target.value)}
+                  onKeyDown={(event) => submitOnHotkey(event, () => void steerSelected())}
+                  onPaste={steerAttachments.handlePaste}
+                  rows={3}
+                  placeholder={
+                    selected.threadId === rootThreadId
+                      ? 'この統括責任者へ追加指示…（Ctrl+Enterで送信）'
+                      : `${selected.name}への追加指示（統括責任者ごしに伝えます）…`
+                  }
+                  disabled={connection !== 'connected'}
+                />
+                <AttachmentTray
+                  box={steerAttachments}
+                  disabled={connection !== 'connected'}
+                  hint="ドロップ・Ctrl+Vで添付"
+                />
+              </div>
+              <p className="detail-hint">
+                {selected.threadId === rootThreadId
+                  ? '統括責任者には直接届きます。作業中なら割り込み、手が空いていれば新しい依頼になります。'
+                  : '担当者には直接送れない決まりなので、統括責任者に伝えて反映してもらいます。'}
+                <br />Ctrl + Enter でも送れます。
+              </p>
               <div className="detail-actions">
-                <button className="secondary-button" type="button" disabled={busy || !selected.threadId || !selected.turnId || !steerText.trim()} onClick={steerSelected}>追加指示</button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={busy || connection !== 'connected' || !steerText.trim()}
+                  onClick={steerSelected}
+                >追加指示</button>
                 <button className="danger-button" type="button" disabled={!selected.threadId || !selected.turnId} onClick={interruptSelected}>停止</button>
               </div>
             </section>
@@ -858,6 +1598,27 @@ export function App(): React.JSX.Element {
                     <div className="form-banner">オリジナル社員を作成して、そのまま雇用します</div>
                     <label>名前<input value={agentDraft.name} onChange={(event) => setAgentDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="例: Planner" /></label>
                     <label>職種<input value={agentDraft.job} onChange={(event) => setAgentDraft((draft) => ({ ...draft, job: event.target.value }))} placeholder="例: 設計担当" /></label>
+                    <label>
+                      働く部屋
+                      <select
+                        value={agentDraft.duty}
+                        onChange={(event) =>
+                          setAgentDraft((draft) => ({
+                            ...draft,
+                            duty: event.target.value as AgentProfile['duty'],
+                          }))
+                        }
+                      >
+                        <option value="planner">企画会議室（企画・要件整理）</option>
+                        <option value="coder">開発室（実装）</option>
+                        <option value="researcher">資料室（調査）</option>
+                        <option value="tester">テストラボ（検証）</option>
+                        <option value="reviewer">企画会議室（レビュー）</option>
+                        <option value="designer">開発室（デザイン）</option>
+                        <option value="writer">資料室（ドキュメント）</option>
+                        <option value="general">フロア（その他）</option>
+                      </select>
+                    </label>
                     <label>得意な仕事<textarea rows={2} value={agentDraft.specialty} onChange={(event) => setAgentDraft((draft) => ({ ...draft, specialty: event.target.value }))} placeholder="要件整理、設計、ドキュメント作成" /></label>
                     <label>性格<textarea rows={2} value={agentDraft.personality} onChange={(event) => setAgentDraft((draft) => ({ ...draft, personality: event.target.value }))} placeholder="丁寧で、先回りして考える" /></label>
                     <fieldset className="agent-color-picker">
@@ -1144,8 +1905,37 @@ export function App(): React.JSX.Element {
                 </div>
               </section>
 
+              <section className="payroll-panel payroll-compare">
+                <div className="game-section-title"><span>03</span><h3>ほかの契約だったら？（想定価格）</h3></div>
+                <table className="payroll-table">
+                  <thead>
+                    <tr><th>契約のしかた</th><th>種類</th><th>今回の想定金額</th><th>補足</th></tr>
+                  </thead>
+                  <tbody>
+                    {planEstimates.map((estimate) => (
+                      <tr
+                        key={estimate.planId}
+                        className={estimate.planId === costSettings.planId ? 'current-plan' : ''}
+                      >
+                        <td>{estimate.label}</td>
+                        <td>{estimate.kind === 'flat' ? '定量（定額）課金' : 'API・従量課金'}</td>
+                        <td>
+                          ￥{estimate.yen.toFixed(2)}
+                          {estimate.kind === 'flat' && <em>/月</em>}
+                        </td>
+                        <td className="payroll-compare-note">{estimate.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="payroll-caution">
+                  ※ 定量課金（定額プラン）は月額そのものを表示しています。今回の作業ぶんだけで追加請求されるわけではありません。
+                  API（従量課金）の欄は、同じ作業量をそのモデルのAPIで実行した場合の目安です。
+                </p>
+              </section>
+
               <section className="payroll-panel">
-                <div className="game-section-title"><span>03</span><h3>料金の設定</h3></div>
+                <div className="game-section-title"><span>04</span><h3>料金の設定</h3></div>
                 <div className="payroll-settings">
                   <label>
                     使っているプラン
@@ -1221,6 +2011,497 @@ export function App(): React.JSX.Element {
                   >メーターを0円にもどす</button>
                 </div>
               </section>
+
+              <section className="payroll-panel">
+                <div className="game-section-title"><span>05</span><h3>HP（AI使用残量）</h3></div>
+                <div className="usage-limit-detail">
+                  {usageRows.length === 0 ? (
+                    <p className="payroll-empty">
+                      いまの契約では残量が取得できないか、まだ届いていません。
+                      Codexに接続して1度でも作業を依頼すると表示されます。
+                    </p>
+                  ) : (
+                    usageRows.map((row) => (
+                      <div className="usage-limit-line" key={row.key}>
+                        <strong>{row.label}</strong>
+                        <div className="usage-limit-track">
+                          <i className={row.tone} style={{ width: `${row.remaining}%` }} />
+                        </div>
+                        <b className={row.tone}>のこり {Math.round(row.remaining)}%</b>
+                        <small>{row.reset || '回復時刻は未提供'}</small>
+                      </div>
+                    ))
+                  )}
+                  {rateLimits?.credits?.balance !== undefined && (
+                    <p className="usage-limit-credits">
+                      追加クレジット残高：{rateLimits.credits.unlimited
+                        ? '無制限'
+                        : `${rateLimits.credits.balance.toLocaleString('ja-JP')}`}
+                    </p>
+                  )}
+                  <p className="payroll-caution">
+                    ※ 上の残量はChatGPTのプランに紐づく使用枠です。API従量課金では表示されません。
+                    {rateLimits?.updatedAt
+                      ? `（最終取得 ${new Date(rateLimits.updatedAt).toLocaleTimeString('ja-JP')}）`
+                      : ''}
+                  </p>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {roadmapOpen && (
+        <div
+          className="roadmap-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setRoadmapOpen(false);
+          }}
+        >
+          <section className="roadmap-window" role="dialog" aria-modal="true" aria-labelledby="roadmap-title">
+            <header className="game-window-titlebar roadmap-titlebar">
+              <div className="title-icon">進</div>
+              <div>
+                <span>PROJECT ROADMAP</span>
+                <h2 id="roadmap-title">進行表</h2>
+              </div>
+              <button type="button" aria-label="進行表を閉じる" onClick={() => setRoadmapOpen(false)}>×</button>
+            </header>
+            <div className="roadmap-summary">
+              <div>
+                <strong>{roadmap.title || '未設定のプロジェクト'}</strong>
+                <small>統括責任者 {directorAgent?.name ?? '東葛大五郎'} が作成・更新します</small>
+              </div>
+              <div className="roadmap-summary-stats">
+                <span><b>{roadmapProgress.percent}</b>% 完了</span>
+                <span><b>{roadmapProgress.done}</b>/{roadmap.steps.length} 項目</span>
+                <span><b>{projectStartedAt ? formatElapsed(Date.now() - projectStartedAt) : '―'}</b> 経過</span>
+              </div>
+            </div>
+            <div className={`roadmap-current-state ${progressWaiting.tone}`}>
+              <i />
+              <div><small>いま待っていること</small><strong>{progressWaiting.text}</strong></div>
+            </div>
+            <RoadmapMilestones steps={roadmap.steps} />
+            <div className="roadmap-list">
+              {roadmap.steps.length === 0 ? (
+                <p className="roadmap-empty">
+                  まだ進行表はありません。<br />
+                  大きな作業を依頼すると、統括責任者がロードマップを作ってここに掲示します。
+                </p>
+              ) : (
+                <ol>
+                  {roadmap.steps.map((step, index) => (
+                    <li className={`roadmap-step ${step.status}`} key={step.id}>
+                      <span className="roadmap-step-number">{String(index + 1).padStart(2, '0')}</span>
+                      <div className="roadmap-step-copy">
+                        <strong>{step.title}</strong>
+                        <small>{step.owner ? `担当: ${step.owner}` : '担当: 統括責任者が割り振ります'}</small>
+                      </div>
+                      <span className={`roadmap-step-status ${step.status}`}>
+                        {roadmapStatusLabels[step.status]}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+            <footer className="roadmap-footer">
+              <span>進行表はオフィスの掲示板にも貼り出されています</span>
+              <span>{roadmap.updatedAt ? `最終更新 ${new Date(roadmap.updatedAt).toLocaleTimeString('ja-JP')}` : ''}</span>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {savesOpen && (
+        <div
+          className="saves-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSavesOpen(false);
+          }}
+        >
+          <section className="saves-window" role="dialog" aria-modal="true" aria-labelledby="saves-title">
+            <header className="game-window-titlebar saves-titlebar">
+              <div className="title-icon">▣</div>
+              <div>
+                <span>SAVE &amp; LOAD</span>
+                <h2 id="saves-title">セーブ／ロード</h2>
+              </div>
+              <button type="button" aria-label="セーブ画面を閉じる" onClick={() => setSavesOpen(false)}>×</button>
+            </header>
+
+            <div className="saves-status">
+              {repoStatus?.isRepo ? (
+                <>
+                  <span><b>{saves.length}</b> セーブデータ</span>
+                  <span><b>{repoStatus.changedFiles}</b> 未セーブの変更</span>
+                  <span className="saves-branch">ブランチ {repoStatus.branch}</span>
+                </>
+              ) : (
+                <span className="saves-branch">{repoStatus?.message ?? '状態を確認しています…'}</span>
+              )}
+              <button type="button" disabled={saveBusy} onClick={() => void refreshSaves()}>更新</button>
+            </div>
+
+            {saveError && <p className="saves-error">{saveError}</p>}
+
+            {repoStatus && repoStatus.nestedRepos.length > 0 && (
+              <div className="saves-nested">
+                <strong>次の {repoStatus.nestedRepos.length} 個は、このセーブに含まれません</strong>
+                <p>
+                  それぞれが独自にGitで管理されているフォルダです。中身は無事ですが、
+                  ここでセーブ／ロードしても影響しません。個別にセーブしたい場合は、
+                  上の WORKSPACE でそのフォルダを作業フォルダに選び直してください。
+                </p>
+                <ul>
+                  {repoStatus.nestedRepos.map((entry) => (
+                    <li key={entry}>{entry}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {repoStatus && !repoStatus.gitAvailable ? (
+              <div className="saves-setup">
+                <p>
+                  セーブ機能は Git を使って動きます。<br />
+                  <strong>Git for Windows</strong> をインストールすると使えるようになります。
+                </p>
+              </div>
+            ) : repoStatus && !repoStatus.isRepo ? (
+              <div className="saves-setup">
+                <p>
+                  この作業フォルダは、まだセーブに対応していません。<br />
+                  下のボタンを押すと準備します（作業フォルダに記録用のデータと、
+                  記録しないものを決める <code>.gitignore</code> を作ります）。
+                </p>
+                <button className="game-primary-button" type="button" disabled={saveBusy} onClick={() => void prepareSaves()}>
+                  {saveBusy ? '準備しています…' : 'セーブを始める'}
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="saves-composer">
+                  <label htmlFor="save-label">このセーブの名前</label>
+                  <input
+                    id="save-label"
+                    value={saveLabel}
+                    maxLength={80}
+                    placeholder="例: ログイン画面ができたところ"
+                    onChange={(event) => setSaveLabel(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !saveBusy) void createSave();
+                    }}
+                  />
+                  <button className="game-primary-button" type="button" disabled={saveBusy} onClick={() => void createSave()}>
+                    {saveBusy ? '書き込み中…' : '★ ここにセーブ'}
+                  </button>
+                </div>
+
+                <div className="saves-list">
+                  {saves.length === 0 ? (
+                    <p className="saves-empty">セーブデータはまだありません。</p>
+                  ) : (
+                    saves.map((slot) => (
+                      <article className={`save-slot ${slot.kind}`} key={slot.commit}>
+                        <div className="save-slot-no">
+                          <span>{saveKindLabels[slot.kind].tag}</span>
+                          <b>{slotNumbers.get(slot.commit) ?? '—'}</b>
+                        </div>
+                        <div className="save-slot-copy">
+                          <strong>{slot.subject}</strong>
+                          <time>{new Date(slot.time).toLocaleString('ja-JP')}</time>
+                          {slot.meta ? (
+                            <dl className="save-slot-meta">
+                              {slot.meta.roadmapTitle && (
+                                <div><dt>進行</dt><dd>{slot.meta.roadmapTitle}（{slot.meta.roadmapDone ?? 0}/{slot.meta.roadmapTotal ?? 0}）</dd></div>
+                              )}
+                              <div><dt>成果物</dt><dd>{slot.meta.deliverables ?? 0} 件</dd></div>
+                              <div><dt>費用</dt><dd>￥{(slot.meta.yen ?? 0).toFixed(2)}（{formatTokens(slot.meta.tokens ?? 0)} トークン）</dd></div>
+                              {slot.meta.model && <div><dt>モデル</dt><dd>{slot.meta.model}</dd></div>}
+                            </dl>
+                          ) : (
+                            <small className="save-slot-plain">{saveKindLabels[slot.kind].note}</small>
+                          )}
+                        </div>
+                        <div className="save-slot-actions">
+                          <code>{slot.shortCommit}</code>
+                          <button type="button" disabled={saveBusy} onClick={() => setPendingLoad(slot)}>
+                            ロード
+                          </button>
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+
+            <footer className="saves-footer">
+              <span>ロードすると、いまの状態は自動でセーブしてから復元します</span>
+              <span title={workspace}>{workspace}</span>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {pendingLoad && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="approval-modal risk-medium"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="load-title"
+          >
+            <div className="approval-icon">▣</div>
+            <span className="eyebrow">ロード かくにん</span>
+            <h2 id="load-title">このセーブデータを読み込みますか？</h2>
+            <p className="approval-headline">{pendingLoad.subject}</p>
+            <ul className="approval-bullets">
+              <li>作業フォルダの中身が、{new Date(pendingLoad.time).toLocaleString('ja-JP')} の状態に戻ります。</li>
+              <li>いまの状態は「ロード前の自動セーブ」として自動的に記録するので、消えません。</li>
+              <li>戻したあとで気が変わったら、その自動セーブをロードすれば元どおりです。</li>
+            </ul>
+            {repoStatus && repoStatus.changedFiles > 0 && (
+              <p className="approval-risk medium">
+                セーブしていない変更が {repoStatus.changedFiles} 件あります。これらも自動セーブに含めて記録します。
+              </p>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={() => setPendingLoad(null)}>
+                やめる
+              </button>
+              <button type="button" className="primary-button" onClick={() => void confirmLoad()}>
+                ロードする
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {reportOpen && accountingReport && (
+        <div
+          className="report-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setReportOpen(false);
+          }}
+        >
+          <section className="report-window" role="dialog" aria-modal="true" aria-labelledby="report-title">
+            <header className="game-window-titlebar report-titlebar">
+              <div className="title-icon">計</div>
+              <div>
+                <span>ACCOUNTING REPORT</span>
+                <h2 id="report-title">会計報告書</h2>
+              </div>
+              <button type="button" aria-label="会計報告を閉じる" onClick={() => setReportOpen(false)}>×</button>
+            </header>
+            <div className="report-history-bar">
+              <label>
+                <span>保存済みの会計報告</span>
+                <select
+                  value={accountingReport.id}
+                  onChange={(event) => openAccountingReport(event.target.value)}
+                >
+                  {accountingReports.map((report) => (
+                    <option key={report.id} value={report.id}>{report.title}</option>
+                  ))}
+                </select>
+              </label>
+              <strong>{accountingReports.length}件を自動保存</strong>
+              <button type="button" onClick={() => buildAccountingReport('途中経過の保存')}>
+                現在の会計を保存
+              </button>
+            </div>
+            <div className="report-head">
+              <div>
+                <strong>{accountingReport.title}</strong>
+                <small>{accountingReport.summary}</small>
+              </div>
+              <div className="report-total">
+                <span>ご請求（目安）</span>
+                <b>￥{accountingReport.totalYen.toFixed(2)}</b>
+                <small>{accountingReport.planLabel} ／ {accountingReport.modelLabel}</small>
+              </div>
+            </div>
+            <div className="report-body">
+              <section className="report-section">
+                <div className="game-section-title"><span>01</span><h3>担当者ごとの明細</h3></div>
+                <table className="report-table">
+                  <thead>
+                    <tr><th>担当者</th><th>作業内容</th><th>トークン</th><th>費用</th></tr>
+                  </thead>
+                  <tbody>
+                    {accountingReport.lines.length === 0 && (
+                      <tr><td colSpan={4} className="report-empty">まだ費用の記録がありません。</td></tr>
+                    )}
+                    {accountingReport.lines.map((line) => (
+                      <tr key={line.threadId}>
+                        <td>
+                          <span className="report-chip" style={{ background: hexColor(line.color) }} />
+                          <div className="report-name">
+                            <strong>{line.name}</strong>
+                            <small>{line.role}</small>
+                          </div>
+                        </td>
+                        <td className="report-tasks">
+                          {line.tasks.length === 0 ? (
+                            <small>記録なし</small>
+                          ) : (
+                            <ul>
+                              {line.tasks.slice(-6).map((entry) => (
+                                <li key={entry}>{entry}</li>
+                              ))}
+                              {line.tasks.length > 6 && <li>ほか {line.tasks.length - 6} 件</li>}
+                            </ul>
+                          )}
+                        </td>
+                        <td className="report-number">
+                          {totalTokens(line.usage).toLocaleString('ja-JP')}
+                          <small>入力 {formatTokens(line.usage.input)} / 出力 {formatTokens(line.usage.output)}</small>
+                        </td>
+                        <td className="report-number report-yen">￥{line.yen.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td>合計</td>
+                      <td>{accountingReport.deliverables.length} 件の成果物</td>
+                      <td className="report-number">{totalTokens(accountingReport.usage).toLocaleString('ja-JP')}</td>
+                      <td className="report-number report-yen">￥{accountingReport.totalYen.toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </section>
+
+              <section className="report-section">
+                <div className="game-section-title"><span>02</span><h3>契約別の想定価格</h3></div>
+                <table className="report-table compact">
+                  <thead>
+                    <tr><th>契約のしかた</th><th>種類</th><th>想定金額</th></tr>
+                  </thead>
+                  <tbody>
+                    {accountingReport.estimates.map((estimate) => (
+                      <tr
+                        key={estimate.planId}
+                        className={estimate.planId === accountingReport.planId ? 'current-plan' : ''}
+                      >
+                        <td>
+                          {estimate.label}
+                          <small>{estimate.note}</small>
+                        </td>
+                        <td>{estimate.kind === 'flat' ? '定量（定額）課金' : 'API・従量課金'}</td>
+                        <td className="report-number report-yen">
+                          ￥{estimate.yen.toFixed(2)}{estimate.kind === 'flat' ? ' /月' : ''}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+
+              <section className="report-section">
+                <div className="game-section-title"><span>03</span><h3>今回やったこと</h3></div>
+                <div className="report-worklist">
+                  <div>
+                    <h4>進行表</h4>
+                    {accountingReport.steps.length === 0 ? (
+                      <p className="report-empty">進行表は作成されていません。</p>
+                    ) : (
+                      <ul>
+                        {accountingReport.steps.map((step) => (
+                          <li key={step.id}>
+                            <span className={`report-step-mark ${step.status}`}>
+                              {step.status === 'done' ? '✓' : step.status === 'active' ? '…' : '−'}
+                            </span>
+                            {step.title}
+                            {step.owner && <em>（{step.owner}）</em>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <h4>成果物</h4>
+                    {accountingReport.deliverables.length === 0 ? (
+                      <p className="report-empty">ファイルの変更はありません。</p>
+                    ) : (
+                      <ul>
+                        {accountingReport.deliverables.slice(-20).map((deliverable) => (
+                          <li key={deliverable.id} title={deliverable.path}>
+                            <span className={`report-step-mark ${deliverable.kind}`}>◆</span>
+                            {fileName(deliverable.path)}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </section>
+            </div>
+            <footer className="report-footer">
+              <span>
+                作成 {new Date(accountingReport.createdAt).toLocaleString('ja-JP')} ／ 経理担当 金田計理
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setReportOpen(false);
+                  addLog('会計報告を確認しました', 'info');
+                }}
+              >閉じる</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {conflict && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="approval-modal risk-medium"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="conflict-title"
+          >
+            <div className="approval-icon">!</div>
+            <span className="eyebrow">せつぞく かくにん</span>
+            <h2 id="conflict-title">ほかでCodexが動いています</h2>
+            <p className="approval-headline">
+              Codexは同時にひとつしか使えません。{conflict.processes.length} 件の
+              Codexが別の場所（ターミナルや他のアプリ）で動いています。
+            </p>
+            <ul className="approval-bullets">
+              {conflict.processes.map((entry) => (
+                <li key={entry.pid}>
+                  {entry.name}（プロセス番号 {entry.pid}{entry.memory ? ` ・ メモリ ${entry.memory}` : ''}）
+                </li>
+              ))}
+            </ul>
+            <p className="approval-guide">
+              「他を切断して接続」を押すと、上の Codex を終了してからこのアプリで接続します。
+              ほかの場所で作業中の内容がある場合は、先に保存してください。
+            </p>
+            <div className="modal-actions modal-actions-three">
+              <button type="button" className="secondary-button" onClick={() => setConflict(null)}>
+                やめる
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  const target = conflict;
+                  setConflict(null);
+                  void connect(target.executable, target.workspace, true);
+                }}
+              >そのまま接続を試す</button>
+              <button type="button" className="primary-button" onClick={() => void disconnectOthersAndConnect()}>
+                他を切断して接続
+              </button>
             </div>
           </section>
         </div>

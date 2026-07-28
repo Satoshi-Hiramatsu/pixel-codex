@@ -73,3 +73,5 @@ src/
 ## 配布物
 
 `npm run make`後、WindowsインストーラーとZIPが`out/make/`へ生成されます。コード署名と正式アイコンはリリース前に別途設定してください。
+
+配布先のPCに必要な条件は[docs/pc-requirements.md](docs/pc-requirements.md)にまとめています。

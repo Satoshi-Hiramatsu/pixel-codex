@@ -41,6 +41,18 @@ const config: ForgeConfig = {
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
         "font-src 'self' data: https://fonts.gstatic.com; " +
         "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com",
+      devServer: {
+        client: {
+          overlay: {
+            errors: true,
+            warnings: true,
+            // Chromium reports failed cross-origin resources without a source,
+            // line, or underlying exception as this opaque message. Showing it
+            // as an app crash is misleading; real runtime errors still surface.
+            runtimeErrors: (error: Error) => error.message !== 'Script error.',
+          },
+        },
+      },
       renderer: {
         config: rendererConfig,
         entryPoints: [

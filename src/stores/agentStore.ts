@@ -4,11 +4,23 @@ import {
   addUsage,
   defaultCostSettings,
   emptyUsage,
+  estimateAllPlans,
+  findPlan,
+  jpyCost,
   type CostSettings,
   type TokenUsage,
 } from '../costs';
+import {
+  defaultModelSettings,
+  modelLabel,
+  modelPlanId,
+  type ModelSettings,
+} from '../models';
 import type {
+  AccountingLine,
+  AccountingReport,
   ActivityLog,
+  AgentDuty,
   AgentProfile,
   AgentState,
   AgentStatus,
@@ -16,6 +28,11 @@ import type {
   ConversationMessage,
   ConnectionStatus,
   Deliverable,
+  RateLimitSnapshot,
+  RateLimitWindow,
+  Roadmap,
+  RoadmapStep,
+  SaveMeta,
   UserQuestion,
   UserQuestionRequest,
 } from '../types';
@@ -51,24 +68,46 @@ interface ThreadUsage {
 }
 
 const costSettingsStorageKey = 'pixel-codex-cost-settings-v1';
+const modelSettingsStorageKey = 'pixel-codex-model-settings-v1';
+const accountingReportsStorageKey = 'pixel-codex-accounting-reports-v1';
+const accountingReportLimit = 50;
 
-function loadCostSettings(): CostSettings {
+function readStored<T>(key: string, fallback: T): T {
   try {
-    const stored = globalThis.localStorage?.getItem(costSettingsStorageKey);
-    if (!stored) return defaultCostSettings;
-    const parsed = JSON.parse(stored) as Partial<CostSettings>;
-    return { ...defaultCostSettings, ...parsed };
+    const stored = globalThis.localStorage?.getItem(key);
+    if (!stored) return fallback;
+    return { ...fallback, ...(JSON.parse(stored) as Partial<T>) };
   } catch {
-    return defaultCostSettings;
+    return fallback;
   }
 }
 
-function saveCostSettings(settings: CostSettings): void {
+function writeStored(key: string, value: unknown): void {
   try {
-    globalThis.localStorage?.setItem(costSettingsStorageKey, JSON.stringify(settings));
+    globalThis.localStorage?.setItem(key, JSON.stringify(value));
   } catch {
     // Settings simply fall back to defaults on the next launch.
   }
+}
+
+function loadAccountingReports(): AccountingReport[] {
+  try {
+    const stored = globalThis.localStorage?.getItem(accountingReportsStorageKey);
+    if (!stored) return [];
+    const value = JSON.parse(stored) as { reports?: unknown };
+    if (!Array.isArray(value.reports)) return [];
+    return value.reports
+      .filter((entry): entry is AccountingReport => Boolean(
+        entry && typeof entry === 'object' && typeof (entry as AccountingReport).id === 'string',
+      ))
+      .slice(0, accountingReportLimit);
+  } catch {
+    return [];
+  }
+}
+
+function saveAccountingReports(reports: AccountingReport[]): void {
+  writeStored(accountingReportsStorageKey, { reports: reports.slice(0, accountingReportLimit) });
 }
 
 interface AgentStore {
@@ -84,11 +123,27 @@ interface AgentStore {
   approval?: ApprovalRequest;
   questionRequest?: UserQuestionRequest;
   agentProfiles: AgentProfile[];
+  roadmap: Roadmap;
+  /** Short Japanese notes of what each thread actually did, for the invoice. */
+  taskHistory: Record<string, string[]>;
+  projectStartedAt: number;
+  accountingReport?: AccountingReport;
+  /** Automatically persisted accounting snapshots, newest first. */
+  accountingReports: AccountingReport[];
+  /** Codexのconfig.tomlに問題があるときの説明。接続できない原因になります。 */
+  configWarning?: string;
+  clearConfigWarning: () => void;
   usage: TokenUsage;
   usageByThread: Record<string, ThreadUsage>;
   usageUpdatedAt: number;
+  /** Codexから届く「あとどれだけ使えるか」。取得できていないときは undefined。 */
+  rateLimits?: RateLimitSnapshot;
+  /** Codexの応答をそのまま渡すと、読み取って保存します。 */
+  applyRateLimits: (payload: unknown) => void;
   costSettings: CostSettings;
+  modelSettings: ModelSettings;
   setCostSettings: (patch: Partial<CostSettings>) => void;
+  setModelSettings: (patch: Partial<ModelSettings>) => void;
   resetUsage: () => void;
   setWorkspace: (workspace: string) => void;
   selectAgent: (id: string) => void;
@@ -103,34 +158,62 @@ interface AgentStore {
   hireAgentProfile: (id: string) => void;
   dismissAgentProfile: (id: string) => void;
   createAgentProfile: (
-    profile: Pick<AgentProfile, 'name' | 'job' | 'specialty' | 'personality' | 'color'>,
+    profile: Pick<AgentProfile, 'name' | 'job' | 'duty' | 'specialty' | 'personality' | 'color'>,
   ) => void;
   removeAgentProfile: (id: string) => void;
+  startProject: (title: string) => void;
+  setRoadmap: (title: string, steps: Array<Pick<RoadmapStep, 'title' | 'owner' | 'status'>>) => void;
+  /** The director's idle chatter: progress percent and a rough finish time. */
+  narrateProgress: () => void;
+  buildAccountingReport: (reason: string) => void;
+  openAccountingReport: (id: string) => void;
+  clearAccountingReport: () => void;
+  /** ロードしたセーブデータの「そのときの状況」を進行表に戻します。 */
+  applyLoadedSave: (meta: SaveMeta) => void;
 }
+
+const directorColor = 0xd8863f;
+const accountantColor = 0x9d7fc4;
+export const accountantAgentId = 'accountant-desk';
 
 const now = Date.now();
 const demoAgents: AgentState[] = [
   {
+    id: 'director',
+    name: '東葛大五郎',
+    role: 'プロジェクト統括責任者',
+    duty: 'director',
+    status: 'planning',
+    task: 'ロードマップを引いて担当を割り当てる',
+    activity: 'ロードマップを作成中',
+    speech: 'まずは進行表を作って、みんなに割り振るぞ。',
+    speechKind: 'activity',
+    color: directorColor,
+    isRoot: true,
+    updatedAt: now,
+  },
+  {
     id: 'manager',
     name: '企画一郎',
-    role: '企画・統括担当',
+    role: '企画担当',
+    duty: 'planner',
     status: 'planning',
-    task: 'プロジェクトを分解して担当を割り当て',
-    activity: '計画を整理中',
-    speech: 'まずはみんなの役割を決めるね！',
+    task: '要件を整理して仕様に落とす',
+    activity: '要件を整理中',
+    speech: '要件をまとめて、仕様に落とし込んでいるよ',
     speechKind: 'activity',
     color: 0xf0bd55,
-    isRoot: true,
     updatedAt: now,
   },
   {
     id: 'researcher',
     name: '調辺探',
     role: '調査担当',
+    duty: 'researcher',
     status: 'researching',
     task: 'App Serverのイベント仕様を確認',
-    activity: '資料室で調査中',
-    speech: '必要なことを調べてくるね！',
+    activity: '資料室で仕様を調査中',
+    speech: 'App Serverの仕様を資料室で調べているよ',
     speechKind: 'activity',
     color: 0x65b7d8,
     updatedAt: now,
@@ -139,10 +222,11 @@ const demoAgents: AgentState[] = [
     id: 'builder',
     name: '組立実',
     role: '実装担当',
+    duty: 'coder',
     status: 'coding',
     task: 'ピクセルオフィスUIを実装',
-    activity: 'ファイルを編集中',
-    speech: 'ただいま作業中～',
+    activity: 'App.tsx を編集中',
+    speech: '開発室で App.tsx を書き換えているよ',
     speechKind: 'activity',
     color: 0xe1775b,
     updatedAt: now,
@@ -151,12 +235,27 @@ const demoAgents: AgentState[] = [
     id: 'tester',
     name: '試験守',
     role: 'テスト担当',
+    duty: 'tester',
     status: 'running',
     task: 'Windowsビルドを検証',
-    activity: 'テストを実行中',
-    speech: 'ちゃんと動くか確かめているよ！',
+    activity: 'npm run typecheck を実行中',
+    speech: 'テストラボで npm run typecheck を実行中',
     speechKind: 'activity',
     color: 0x78b56c,
+    updatedAt: now,
+  },
+  {
+    id: accountantAgentId,
+    name: '金田計理',
+    role: '経理担当',
+    duty: 'accountant',
+    status: 'accounting',
+    task: 'トークン使用量を集計',
+    activity: '使用量を記帳中',
+    speech: 'みんなの働きぶりを帳簿につけているよ',
+    speechKind: 'activity',
+    color: accountantColor,
+    virtual: true,
     updatedAt: now,
   },
 ];
@@ -164,7 +263,7 @@ const demoAgents: AgentState[] = [
 const initialMessages: ConversationMessage[] = [
   {
     id: 'demo-assistant',
-    agentId: 'manager',
+    agentId: 'director',
     role: 'assistant',
     phase: 'commentary',
     text: 'ここにAIからの進捗報告、回答、質問が表示されます。',
@@ -184,37 +283,69 @@ const initialLogs: ActivityLog[] = [
     time: now - 21_000,
     level: 'success',
     agentId: 'builder',
-    message: '組立実が実装席へ移動しました',
+    message: '組立実が開発室へ移動しました',
   },
 ];
 
-const colors = [0xf0bd55, 0x65b7d8, 0xe1775b, 0x78b56c, 0xb58bd4, 0xe09cb2];
-const profileStorageKey = 'pixel-codex-agent-profiles-v1';
-const fallbackAgentIdentities = [
-  { name: '調辺探', role: '調査担当', color: 0x65b7d8 },
-  { name: '組立実', role: '実装担当', color: 0xe1775b },
-  { name: '試験守', role: 'テスト担当', color: 0x78b56c },
-  { name: '絵描大好', role: 'デザイン担当', color: 0xe09cb2 },
-  { name: '見直正', role: 'レビュー担当', color: 0xb58bd4 },
-  { name: '文書綴', role: 'ドキュメント担当', color: 0xe4a05f },
-  { name: '守安堅', role: 'セキュリティ担当', color: 0x6ca69a },
-  { name: '速度駿', role: '性能改善担当', color: 0x7f9fd1 },
+const emptyRoadmap: Roadmap = { title: '', steps: [], startedAt: 0, updatedAt: 0 };
+
+const profileStorageKey = 'pixel-codex-agent-profiles-v2';
+const fallbackAgentIdentities: Array<{
+  name: string;
+  role: string;
+  duty: AgentDuty;
+  color: number;
+}> = [
+  { name: '企画一郎', role: '企画担当', duty: 'planner', color: 0xf0bd55 },
+  { name: '調辺探', role: '調査担当', duty: 'researcher', color: 0x65b7d8 },
+  { name: '組立実', role: '実装担当', duty: 'coder', color: 0xe1775b },
+  { name: '試験守', role: 'テスト担当', duty: 'tester', color: 0x78b56c },
+  { name: '絵描大好', role: 'デザイン担当', duty: 'designer', color: 0xe09cb2 },
+  { name: '見直正', role: 'レビュー担当', duty: 'reviewer', color: 0xb58bd4 },
+  { name: '文書綴', role: 'ドキュメント担当', duty: 'writer', color: 0xe4a05f },
+  { name: '守安堅', role: 'セキュリティ担当', duty: 'reviewer', color: 0x6ca69a },
+  { name: '速度駿', role: '性能改善担当', duty: 'coder', color: 0x7f9fd1 },
 ];
 
 const defaultAgentProfiles: AgentProfile[] = [
   {
+    id: 'director-profile',
+    name: '東葛大五郎',
+    job: 'プロジェクト統括責任者',
+    duty: 'director',
+    specialty: '全体設計、ロードマップ作成、担当への割り振り、進捗管理',
+    personality: '自分では手を動かさず、適材適所で仕事を任せる現場のまとめ役',
+    color: directorColor,
+    hired: true,
+    permanent: true,
+  },
+  {
+    id: 'accountant-profile',
+    name: '金田計理',
+    job: '経理担当',
+    duty: 'accountant',
+    specialty: 'トークン使用量の監視、費用の記帳、会計報告の作成',
+    personality: '一円単位まで気にする几帳面な帳簿番',
+    color: accountantColor,
+    hired: true,
+    permanent: true,
+  },
+  {
     id: 'manager-profile',
     name: '企画一郎',
-    job: '企画・統括担当',
-    specialty: '要件整理、計画、仕事の割り振り',
-    personality: '落ち着いて全体をまとめるリーダー',
+    job: '企画担当',
+    duty: 'planner',
+    specialty: '要件整理、仕様づくり、段取りの検討',
+    personality: '落ち着いて話をまとめる企画マン',
     color: 0xf0bd55,
     hired: true,
+    recommended: true,
   },
   {
     id: 'scout-profile',
     name: '調辺探',
     job: '調査担当',
+    duty: 'researcher',
     specialty: '仕様調査、コードベース探索、情報収集',
     personality: '好奇心旺盛で、分からないことをすぐ調べる',
     color: 0x65b7d8,
@@ -225,6 +356,7 @@ const defaultAgentProfiles: AgentProfile[] = [
     id: 'builder-profile',
     name: '組立実',
     job: '実装担当',
+    duty: 'coder',
     specialty: '機能実装、リファクタリング、不具合修正',
     personality: '手を動かすのが早い、頼れるものづくり担当',
     color: 0xe1775b,
@@ -235,6 +367,7 @@ const defaultAgentProfiles: AgentProfile[] = [
     id: 'checker-profile',
     name: '試験守',
     job: 'テスト担当',
+    duty: 'tester',
     specialty: 'テスト、動作確認、品質チェック',
     personality: '細かな違和感も見逃さない慎重派',
     color: 0x78b56c,
@@ -245,6 +378,7 @@ const defaultAgentProfiles: AgentProfile[] = [
     id: 'designer-profile',
     name: '絵描大好',
     job: 'デザイン担当',
+    duty: 'designer',
     specialty: '画面設計、使いやすさ、見た目の改善',
     personality: '利用者の気持ちを大切にするアイデア担当',
     color: 0xe09cb2,
@@ -255,6 +389,7 @@ const defaultAgentProfiles: AgentProfile[] = [
     id: 'reviewer-profile',
     name: '見直正',
     job: 'レビュー担当',
+    duty: 'reviewer',
     specialty: '設計確認、安全性、仕上げのレビュー',
     personality: '冷静で、完成前にしっかり品質を整える',
     color: 0xb58bd4,
@@ -273,9 +408,12 @@ function loadAgentProfiles(): AgentProfile[] {
     const defaultIds = new Set(defaultAgentProfiles.map((profile) => profile.id));
     const defaults = defaultAgentProfiles.map((profile) => ({
       ...profile,
-      hired: storedById.get(profile.id)?.hired ?? profile.hired,
+      // The director and the accountant are always on staff.
+      hired: profile.permanent ? true : storedById.get(profile.id)?.hired ?? profile.hired,
     }));
-    const custom = parsed.filter((profile) => profile.custom && !defaultIds.has(profile.id));
+    const custom = parsed
+      .filter((profile) => profile.custom && !defaultIds.has(profile.id))
+      .map((profile) => ({ ...profile, duty: profile.duty ?? 'general' }));
     return [...defaults, ...custom];
   } catch {
     return defaultAgentProfiles;
@@ -283,11 +421,7 @@ function loadAgentProfiles(): AgentProfile[] {
 }
 
 function saveAgentProfiles(profiles: AgentProfile[]): void {
-  try {
-    globalThis.localStorage?.setItem(profileStorageKey, JSON.stringify(profiles));
-  } catch {
-    // The app still works for the current session when storage is unavailable.
-  }
+  writeStored(profileStorageKey, profiles);
 }
 
 function valueAt(source: unknown, ...keys: string[]): unknown {
@@ -309,20 +443,163 @@ function arrayAt(source: unknown, ...keys: string[]): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function itemSpeech(type?: string, phase?: string): string {
-  const normalized = type?.toLowerCase() ?? '';
-  if (normalized.includes('agentmessage')) {
-    return phase === 'final_answer'
-      ? 'できたよ！成果物を黒板にまとめたよ！'
-      : 'いまの進み具合をまとめているよ';
+function fileName(value: string): string {
+  return value.split(/[\\/]/).filter(Boolean).pop() ?? value;
+}
+
+/** Keeps speech bubbles to one readable line. */
+function clip(value: string, limit: number): string {
+  const flat = value.replace(/\s+/g, ' ').trim();
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+}
+
+function commandText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.filter((part): part is string => typeof part === 'string').join(' ');
   }
-  if (normalized.includes('plan')) return 'どう進めるか考えているよ～';
-  if (normalized.includes('commandexecution')) return 'ちゃんと動くか確かめているよ！';
-  if (normalized.includes('filechange')) return 'ただいま作業中～。もう少し待ってね！';
-  if (normalized.includes('websearch')) return '必要なことを調べてくるね！';
-  if (normalized.includes('mcptool')) return '便利な道具を使って調べているよ';
-  if (normalized.includes('collab')) return '仲間にも手伝ってもらうね！';
-  return 'ただいま作業中～';
+  return '';
+}
+
+function changedPaths(item: unknown): string[] {
+  const changes = valueAt(item, 'changes');
+  if (Array.isArray(changes)) {
+    return changes
+      .map((change) => textAt(change, 'path'))
+      .filter((path): path is string => Boolean(path));
+  }
+  if (changes && typeof changes === 'object') return Object.keys(changes as Record<string, unknown>);
+  return [];
+}
+
+/**
+ * What the office sees an agent doing. Instead of a generic 「作業中」 this
+ * digs the real command, file name or search phrase out of the Codex payload,
+ * so the bubble says 「npm test を実行中」 rather than 「ただいま作業中～」.
+ */
+interface ItemDescription {
+  status: AgentStatus;
+  activity: string;
+  speech: string;
+  task: string;
+}
+
+function describeItem(
+  itemType: string | undefined,
+  item: unknown,
+  phase: string | undefined,
+): ItemDescription {
+  const normalized = itemType?.toLowerCase() ?? '';
+
+  if (normalized.includes('commandexecution')) {
+    const command = clip(
+      commandText(valueAt(item, 'command') ?? valueAt(item, 'commandLine')),
+      64,
+    );
+    const shown = command || 'コマンド';
+    return {
+      status: 'running',
+      activity: `${clip(shown, 34)} を実行中`,
+      speech: `テストラボで ${clip(shown, 46)} を動かして確認中`,
+      task: `コマンド実行: ${shown}`,
+    };
+  }
+
+  if (normalized.includes('filechange') || normalized.includes('patch')) {
+    const paths = changedPaths(item);
+    const head = paths[0] ? fileName(paths[0]) : 'ファイル';
+    const extra = paths.length > 1 ? ` ほか${paths.length - 1}件` : '';
+    return {
+      status: 'coding',
+      activity: `${clip(head, 26)}${extra} を編集中`,
+      speech: `開発室で ${clip(head, 34)}${extra} を書き換えているよ`,
+      task: `ファイル編集: ${paths.slice(0, 4).join(', ') || '(未取得)'}`,
+    };
+  }
+
+  if (normalized.includes('websearch') || normalized.includes('search')) {
+    const query = clip(
+      textAt(item, 'query') ?? textAt(item, 'text') ?? textAt(item, 'pattern') ?? '',
+      48,
+    );
+    return {
+      status: 'researching',
+      activity: query ? `「${clip(query, 20)}」を調査中` : '資料を調査中',
+      speech: query
+        ? `資料室で「${query}」について調べているよ`
+        : '資料室で必要なことを調べているよ',
+      task: `調査: ${query || '(条件なし)'}`,
+    };
+  }
+
+  if (normalized.includes('mcptool') || normalized.includes('tool')) {
+    const tool = clip(
+      textAt(item, 'tool') ?? textAt(item, 'name') ?? textAt(item, 'server') ?? '',
+      40,
+    );
+    return {
+      status: 'running',
+      activity: tool ? `${clip(tool, 26)} を使用中` : '外部ツールを使用中',
+      speech: tool ? `${tool} という道具を使って作業中` : '便利な道具を使って調べているよ',
+      task: `ツール利用: ${tool || '(名称不明)'}`,
+    };
+  }
+
+  if (normalized.includes('todo') || normalized.includes('plan')) {
+    return {
+      status: 'planning',
+      activity: '進行表を更新中',
+      speech: '進行表に手順を書き出しているところ',
+      task: '進行表の作成・更新',
+    };
+  }
+
+  if (normalized.includes('reasoning') || normalized.includes('thinking')) {
+    return {
+      status: 'planning',
+      activity: '進め方を検討中',
+      speech: 'どう進めるのがいいか考えているよ',
+      task: '進め方の検討',
+    };
+  }
+
+  if (normalized.includes('collab') || normalized.includes('agentspawn')) {
+    const prompt = clip(textAt(item, 'prompt') ?? '', 44);
+    return {
+      status: 'planning',
+      activity: '担当へ作業を依頼中',
+      speech: prompt ? `担当に「${prompt}」をお願いしているよ` : '担当に作業をお願いしているよ',
+      task: `作業の割り振り: ${prompt || '(内容不明)'}`,
+    };
+  }
+
+  if (normalized.includes('agentmessage')) {
+    const text = clip(textAt(item, 'text') ?? '', 52);
+    return {
+      status: 'planning',
+      activity: phase === 'final_answer' ? '完了報告を作成中' : '進捗を報告中',
+      speech: phase === 'final_answer'
+        ? 'できたよ！成果物を黒板にまとめたよ！'
+        : text || 'いまの進み具合をまとめているよ',
+      task: phase === 'final_answer' ? '完了報告の作成' : '進捗報告',
+    };
+  }
+
+  if (normalized.includes('error')) {
+    return {
+      status: 'error',
+      activity: 'エラーを確認中',
+      speech: 'うまくいかなかったみたい。原因を調べるね',
+      task: 'エラー対応',
+    };
+  }
+
+  return {
+    status: 'planning',
+    activity: '作業を進行中',
+    speech: 'ただいま作業中～',
+    task: itemType ? `処理中: ${itemType}` : 'タスクを処理中',
+  };
 }
 
 function deliverableKind(value: unknown): Deliverable['kind'] {
@@ -377,6 +654,16 @@ function upsertMessage(
   return next;
 }
 
+function rememberTask(
+  history: Record<string, string[]>,
+  threadId: string,
+  task: string,
+): Record<string, string[]> {
+  const existing = history[threadId] ?? [];
+  if (existing.includes(task)) return history;
+  return { ...history, [threadId]: [...existing, task].slice(-40) };
+}
+
 function parseQuestions(params: Record<string, unknown>): UserQuestion[] {
   return arrayAt(params, 'questions').flatMap((value, index) => {
     if (!value || typeof value !== 'object') return [];
@@ -393,6 +680,58 @@ function parseQuestions(params: Record<string, unknown>): UserQuestion[] {
       options: options.length ? options : undefined,
     }];
   });
+}
+
+function roadmapStatus(value: unknown): RoadmapStep['status'] {
+  if (value === true) return 'done';
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized.includes('complete') || normalized.includes('done') || normalized === 'true') {
+    return 'done';
+  }
+  if (normalized.includes('progress') || normalized.includes('active') || normalized.includes('current')) {
+    return 'active';
+  }
+  return 'pending';
+}
+
+/** Codex's todo/plan items, whichever shape this build happens to send. */
+function parseRoadmapItems(item: unknown): Array<Pick<RoadmapStep, 'title' | 'status'>> {
+  const raw = [...arrayAt(item, 'items'), ...arrayAt(item, 'plan'), ...arrayAt(item, 'steps')];
+  return raw.flatMap((entry) => {
+    if (typeof entry === 'string') {
+      return entry.trim() ? [{ title: entry.trim(), status: 'pending' as const }] : [];
+    }
+    const title =
+      textAt(entry, 'text') ?? textAt(entry, 'step') ?? textAt(entry, 'title') ?? textAt(entry, 'label');
+    if (!title) return [];
+    const status = roadmapStatus(
+      valueAt(entry, 'status') ?? valueAt(entry, 'completed') ?? valueAt(entry, 'done'),
+    );
+    return [{ title: title.trim(), status }];
+  });
+}
+
+/**
+ * A fallback for when Codex reports no structured plan: pick a numbered list
+ * out of the director's own message so the 進行表 still fills in.
+ */
+function parseRoadmapFromText(text: string): Array<Pick<RoadmapStep, 'title' | 'status'>> {
+  if (!/ロードマップ|進行表|作業計画|手順|ステップ/.test(text)) return [];
+  const steps = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^(\d+[.)、]|[-*・])\s*\S/.test(line))
+    .map((line) => line.replace(/^(\d+[.)、]|[-*・])\s*/, '').trim())
+    .filter((line) => line.length > 1 && line.length < 120);
+  if (steps.length < 2) return [];
+  return steps.slice(0, 14).map((title) => ({ title, status: 'pending' as const }));
+}
+
+/** Finds the staff member a roadmap line is addressed to. */
+function ownerFromTitle(title: string, profiles: AgentProfile[]): string | undefined {
+  return profiles.find(
+    (profile) => profile.hired && (title.includes(profile.name) || title.includes(profile.job)),
+  )?.name;
 }
 
 function numberAt(source: Record<string, unknown>, ...keys: string[]): number {
@@ -425,6 +764,67 @@ function readUsage(source: unknown): TokenUsage | undefined {
   );
   if (!input && !output && !cachedInput && !reasoning) return undefined;
   return { input, output, cachedInput, reasoning };
+}
+
+/** 「いつ回復するか」。秒でも、時刻の文字列でも受け取れるようにしています。 */
+function readResetTime(value: unknown): number | undefined {
+  if (typeof value === 'string' && value) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  // ミリ秒・秒・「あと何秒」のどれで来ても、未来の時刻になるように直します。
+  const asTimestamp = value > 1e12 ? value : value * 1000;
+  const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+  return asTimestamp > oneYearAgo ? asTimestamp : Date.now() + value * 1000;
+}
+
+function readRateLimitWindow(source: unknown): RateLimitWindow | undefined {
+  if (!source || typeof source !== 'object') return undefined;
+  const record = source as Record<string, unknown>;
+  const hasUsed = 'usedPercent' in record || 'used_percent' in record;
+  if (!hasUsed) return undefined;
+  return {
+    usedPercent: Math.min(100, Math.max(0, numberAt(record, 'usedPercent', 'used_percent'))),
+    windowDurationMins:
+      numberAt(
+        record,
+        'windowDurationMins',
+        'window_duration_mins',
+        'windowMinutes',
+        'window_minutes',
+      ) || undefined,
+    resetsAt: readResetTime(record.resetsAt ?? record.resets_at ?? record.resetsInSeconds),
+  };
+}
+
+/**
+ * Codexの使用量スナップショットを読み取ります。短期（primary）と長期（secondary）の
+ * 2つの枠があり、どちらも「使った割合」で返ってきます。
+ */
+export function readRateLimits(source: unknown): RateLimitSnapshot | undefined {
+  if (!source || typeof source !== 'object') return undefined;
+  const record = source as Record<string, unknown>;
+  // 応答は { rateLimits: {...} } のことも、枠が直に入っていることもあります。
+  const snapshot = (record.rateLimits ?? record.rate_limits ?? record) as Record<string, unknown>;
+  if (!snapshot || typeof snapshot !== 'object') return undefined;
+  const primary = readRateLimitWindow(snapshot.primary);
+  const secondary = readRateLimitWindow(snapshot.secondary);
+  if (!primary && !secondary) return undefined;
+  const credits = snapshot.credits as Record<string, unknown> | undefined;
+  return {
+    primary,
+    secondary,
+    planType: typeof snapshot.planType === 'string' ? snapshot.planType : undefined,
+    credits: credits && typeof credits === 'object'
+      ? {
+          hasCredits: Boolean(credits.hasCredits),
+          unlimited: Boolean(credits.unlimited),
+          balance: typeof credits.balance === 'number' ? credits.balance : undefined,
+        }
+      : undefined,
+    updatedAt: Date.now(),
+  };
 }
 
 function sumUsage(byThread: Record<string, ThreadUsage>): TokenUsage {
@@ -468,14 +868,6 @@ const riskLabels: Record<ApprovalRisk, string> = {
   medium: '安全度：中（内容が書き換わります。よく確認してください）',
   high: '安全度：低（取り消せない可能性があります。特に注意してください）',
 };
-
-function commandText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) {
-    return value.filter((part): part is string => typeof part === 'string').join(' ');
-  }
-  return '';
-}
 
 function approvalFiles(item: unknown): Array<{ path: string; kind: Deliverable['kind'] }> {
   const changes = valueAt(item, 'changes');
@@ -583,25 +975,6 @@ function describeApproval(
   };
 }
 
-function statusFromItem(type?: string): AgentStatus {
-  const normalized = type?.toLowerCase() ?? '';
-  if (normalized.includes('websearch')) return 'researching';
-  if (normalized.includes('filechange')) return 'coding';
-  if (normalized.includes('commandexecution') || normalized.includes('mcptool')) return 'running';
-  if (normalized.includes('error')) return 'error';
-  return 'planning';
-}
-
-function activityFromItem(type?: string): string {
-  const normalized = type?.toLowerCase() ?? '';
-  if (normalized.includes('websearch')) return 'Webを調査中';
-  if (normalized.includes('filechange')) return 'ファイルを編集中';
-  if (normalized.includes('commandexecution')) return 'コマンドを実行中';
-  if (normalized.includes('mcptool')) return '外部ツールを使用中';
-  if (normalized.includes('agentmessage')) return '報告を作成中';
-  return '作業を進行中';
-}
-
 function upsertAgent(
   agents: AgentState[],
   id: string,
@@ -615,12 +988,13 @@ function upsertAgent(
       {
         id,
         threadId: id,
-        name: patch.isRoot ? '企画一郎' : fallback.name,
-        role: patch.isRoot ? '企画・統括担当' : fallback.role,
+        name: patch.isRoot ? '東葛大五郎' : fallback.name,
+        role: patch.isRoot ? 'プロジェクト統括責任者' : fallback.role,
+        duty: patch.isRoot ? 'director' : fallback.duty,
         status: 'idle',
         task: '指示を待っています',
         activity: '待機中',
-        color: patch.isRoot ? colors[0] : fallback.color,
+        color: patch.isRoot ? directorColor : fallback.color,
         updatedAt: Date.now(),
         ...patch,
       },
@@ -631,9 +1005,41 @@ function upsertAgent(
   return next;
 }
 
+function accountantAgent(): AgentState {
+  return {
+    id: accountantAgentId,
+    name: '金田計理',
+    role: '経理担当',
+    duty: 'accountant',
+    status: 'accounting',
+    task: 'トークン使用量を監視',
+    activity: '使用量を記帳中',
+    speech: '経理室でみんなの使用量を見ているよ',
+    speechKind: 'activity',
+    color: accountantColor,
+    virtual: true,
+    updatedAt: Date.now(),
+  };
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return '1分未満';
+  if (minutes < 60) return `${minutes}分`;
+  return `${Math.floor(minutes / 60)}時間${minutes % 60}分`;
+}
+
+function reportTimestamp(time: number): string {
+  const date = new Date(time);
+  const two = (value: number): string => String(value).padStart(2, '0');
+  return `${date.getFullYear()}/${two(date.getMonth() + 1)}/${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+const workingStatuses: AgentStatus[] = ['planning', 'researching', 'coding', 'running'];
+
 export const useAgentStore = create<AgentStore>((set, get) => ({
   agents: demoAgents,
-  selectedAgentId: 'manager',
+  selectedAgentId: 'director',
   connection: 'demo',
   connectionLabel: 'デモ表示',
   workspace: '',
@@ -641,15 +1047,35 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   messages: initialMessages,
   deliverables: [],
   agentProfiles: loadAgentProfiles(),
+  roadmap: emptyRoadmap,
+  taskHistory: {},
+  projectStartedAt: 0,
+  accountingReports: loadAccountingReports(),
   usage: emptyUsage,
   usageByThread: {},
   usageUpdatedAt: 0,
-  costSettings: loadCostSettings(),
+  applyRateLimits: (payload) => {
+    const rateLimits = readRateLimits(payload);
+    if (rateLimits) set({ rateLimits });
+  },
+  costSettings: readStored(costSettingsStorageKey, defaultCostSettings),
+  modelSettings: readStored(modelSettingsStorageKey, defaultModelSettings),
   setCostSettings: (patch) =>
     set((state) => {
       const costSettings = { ...state.costSettings, ...patch };
-      saveCostSettings(costSettings);
+      writeStored(costSettingsStorageKey, costSettings);
       return { costSettings };
+    }),
+  setModelSettings: (patch) =>
+    set((state) => {
+      const modelSettings = { ...state.modelSettings, ...patch };
+      writeStored(modelSettingsStorageKey, modelSettings);
+      // The payroll meter should follow the model that is actually in use.
+      const costSettings = state.costSettings.planId === 'custom'
+        ? state.costSettings
+        : { ...state.costSettings, planId: modelPlanId(modelSettings) };
+      if (costSettings !== state.costSettings) writeStored(costSettingsStorageKey, costSettings);
+      return { modelSettings, costSettings };
     }),
   resetUsage: () => set({ usage: emptyUsage, usageByThread: {}, usageUpdatedAt: Date.now() }),
   setWorkspace: (workspace) => set({ workspace, deliverables: [] }),
@@ -657,21 +1083,28 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   setConnection: (connection, connectionLabel) => set({ connection, connectionLabel }),
   setRootThread: (rootThreadId) => {
     set((state) => {
-      const manager = state.agentProfiles.find((profile) => profile.id === 'manager-profile');
+      const director = state.agentProfiles.find((profile) => profile.id === 'director-profile');
+      const base = state.connection === 'connected' ? [] : state.agents;
+      const withDirector = upsertAgent(base, rootThreadId, {
+        threadId: rootThreadId,
+        name: director?.name ?? '東葛大五郎',
+        role: director?.job ?? 'プロジェクト統括責任者',
+        duty: 'director',
+        color: director?.color ?? directorColor,
+        isRoot: true,
+        status: 'idle',
+        task: '最初の指示を待っています',
+        activity: '統括席で待機中',
+        speech: '指示をくれれば、担当に割り振るぞ。',
+        speechKind: 'activity',
+      });
+      // 経理担当はCodexのスレッドを持たず、いつも経理室に常駐しています。
+      const agents = withDirector.some((agent) => agent.id === accountantAgentId)
+        ? withDirector
+        : [...withDirector, accountantAgent()];
       return {
         rootThreadId,
-        agents: upsertAgent(state.connection === 'connected' ? [] : state.agents, rootThreadId, {
-          threadId: rootThreadId,
-          name: manager?.name ?? '企画一郎',
-          role: manager?.job ?? '企画・統括担当',
-          color: manager?.color ?? colors[0],
-          isRoot: true,
-          status: 'idle',
-          task: '最初の指示を待っています',
-          activity: '待機中',
-          speech: '次は何をすればいい？',
-          speechKind: 'activity',
-        }),
+        agents,
         messages: state.connection === 'connected'
           ? state.messages.filter((message) => message.id !== 'demo-assistant')
           : state.messages,
@@ -717,6 +1150,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       deliverables: [],
       approval: undefined,
       questionRequest: undefined,
+      roadmap: emptyRoadmap,
+      taskHistory: {},
+      projectStartedAt: 0,
+      accountingReport: undefined,
       usage: emptyUsage,
       usageByThread: {},
       usageUpdatedAt: Date.now(),
@@ -732,9 +1169,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   dismissAgentProfile: (id) =>
     set((state) => {
       const agentProfiles = state.agentProfiles.map((profile) =>
-        profile.id === id && profile.id !== 'manager-profile'
-          ? { ...profile, hired: false }
-          : profile,
+        profile.id === id && !profile.permanent ? { ...profile, hired: false } : profile,
       );
       saveAgentProfiles(agentProfiles);
       return { agentProfiles };
@@ -761,6 +1196,191 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       saveAgentProfiles(agentProfiles);
       return { agentProfiles };
     }),
+  startProject: (title) =>
+    set({
+      projectStartedAt: Date.now(),
+      accountingReport: undefined,
+      roadmap: { title, steps: [], startedAt: Date.now(), updatedAt: Date.now() },
+    }),
+  setRoadmap: (title, steps) =>
+    set((state) => {
+      if (!steps.length) return {};
+      const previous = new Map(state.roadmap.steps.map((step) => [step.title, step]));
+      const next: RoadmapStep[] = steps.map((step, index) => {
+        const existing = previous.get(step.title);
+        return {
+          id: existing?.id ?? `step-${index}-${step.title.slice(0, 12)}`,
+          title: step.title,
+          owner: step.owner ?? existing?.owner ?? ownerFromTitle(step.title, state.agentProfiles),
+          status: step.status,
+          updatedAt: existing?.status === step.status ? existing.updatedAt : Date.now(),
+        };
+      });
+      return {
+        roadmap: {
+          title: title || state.roadmap.title || 'プロジェクト進行表',
+          steps: next,
+          startedAt: state.roadmap.startedAt || Date.now(),
+          updatedAt: Date.now(),
+        },
+      };
+    }),
+  narrateProgress: () => {
+    const state = get();
+    const director = state.agents.find((agent) => agent.duty === 'director');
+    if (!director) return;
+    const busy = state.agents.filter(
+      (agent) =>
+        agent.id !== director.id &&
+        agent.duty !== 'accountant' &&
+        workingStatuses.includes(agent.status),
+    ).length;
+    // 「手が空いている」＝自分では手を動かしていないとき。担当が動いている間の
+    // 待ちも含みます。逆に統括自身が承認待ちやエラー対応中なら口を挟みません。
+    const free =
+      director.status === 'idle' ||
+      director.status === 'done' ||
+      (director.status === 'planning' && busy > 0);
+    if (!free) return;
+    const steps = state.roadmap.steps;
+
+    let percent: number;
+    if (steps.length) {
+      const done = steps.filter((step) => step.status === 'done').length;
+      const active = steps.filter((step) => step.status === 'active').length;
+      percent = Math.round(((done + active * 0.5) / steps.length) * 100);
+    } else {
+      const workers = state.agents.filter((agent) => agent.duty !== 'accountant');
+      const finished = workers.filter((agent) => agent.status === 'done').length;
+      percent = workers.length ? Math.round((finished / workers.length) * 100) : 0;
+    }
+    percent = Math.max(0, Math.min(100, percent));
+
+    const elapsed = state.projectStartedAt ? Date.now() - state.projectStartedAt : 0;
+    let eta = '';
+    if (percent >= 100) {
+      eta = 'まもなく完了';
+    } else if (elapsed > 20_000 && percent > 4) {
+      eta = `のこり およそ ${formatDuration((elapsed / percent) * (100 - percent))}`;
+    } else {
+      eta = '残り時間は計測中';
+    }
+    const active = steps.find((step) => step.status === 'active');
+    const detail = active
+      ? `いまは「${clip(active.title, 22)}」`
+      : busy
+        ? `${busy}名が作業中`
+        : '手空きの者はおらんな';
+
+    set((current) => ({
+      agents: upsertAgent(current.agents, director.id, {
+        speech: `進捗 ${percent}%。${eta}。${detail}。`,
+        speechKind: 'message',
+        activity: `進捗 ${percent}% を確認中`,
+      }),
+    }));
+  },
+  buildAccountingReport: (reason) => {
+    const state = get();
+    const planId = state.costSettings.planId;
+    const plan = findPlan(planId);
+    const lines: AccountingLine[] = Object.entries(state.usageByThread)
+      .map(([threadId, entry]) => {
+        const agent = state.agents.find(
+          (candidate) => candidate.id === threadId || candidate.threadId === threadId,
+        );
+        return {
+          threadId,
+          name: agent?.name ?? '退勤したスタッフ',
+          role: agent?.role ?? '過去のスレッド',
+          color: agent?.color ?? 0x94a0a0,
+          usage: entry.usage,
+          yen: jpyCost(entry.usage, state.costSettings),
+          tasks: state.taskHistory[threadId] ?? [],
+        };
+      })
+      .sort((left, right) => right.yen - left.yen);
+
+    const totalYen = jpyCost(state.usage, state.costSettings);
+    const elapsedMs = state.projectStartedAt ? Date.now() - state.projectStartedAt : 0;
+    const doneSteps = state.roadmap.steps.filter((step) => step.status === 'done').length;
+    const createdAt = Date.now();
+    const workSummary = [
+      state.roadmap.steps.length
+        ? `進行 ${doneSteps}/${state.roadmap.steps.length}`
+        : '進行表なし',
+      `成果物 ${state.deliverables.length}件`,
+      `参加 ${lines.length}名`,
+    ].join('・');
+    const report: AccountingReport = {
+      id: `report-${createdAt}`,
+      createdAt,
+      workspace: state.workspace,
+      title: `${reportTimestamp(createdAt)}｜${state.roadmap.title || '今回のプロジェクト'}｜${workSummary}`,
+      summary: [
+        `${reason}のため、経理担当がここまでの費用をまとめました。`,
+        `作業時間 ${formatDuration(elapsedMs)}／参加 ${lines.length}名`,
+        state.roadmap.steps.length
+          ? `進行表 ${doneSteps}/${state.roadmap.steps.length} 項目が完了`
+          : '進行表は作成されていません',
+        `成果物 ${state.deliverables.length} 件`,
+      ].join(' ・ '),
+      lines,
+      deliverables: state.deliverables,
+      steps: state.roadmap.steps,
+      usage: state.usage,
+      totalYen,
+      planId,
+      planLabel: plan.label,
+      modelLabel: modelLabel(state.modelSettings),
+      estimates: estimateAllPlans(state.usage, state.costSettings),
+      elapsedMs,
+    };
+
+    set((current) => {
+      const accountingReports = [
+        report,
+        ...current.accountingReports.filter((entry) => entry.id !== report.id),
+      ].slice(0, accountingReportLimit);
+      saveAccountingReports(accountingReports);
+      return {
+        accountingReport: report,
+        accountingReports,
+        agents: upsertAgent(current.agents, accountantAgentId, {
+        status: 'accounting',
+        activity: '会計報告を作成中',
+        speech: `会計報告ができたよ。合計 ￥${totalYen.toFixed(2)} だね`,
+        speechKind: 'message',
+        }),
+      };
+    });
+    get().addLog('経理担当が会計報告を提出しました', 'success', accountantAgentId);
+  },
+  openAccountingReport: (id) => set((state) => ({
+    accountingReport: state.accountingReports.find((report) => report.id === id)
+      ?? state.accountingReport,
+  })),
+  clearAccountingReport: () => set({ accountingReport: undefined }),
+  clearConfigWarning: () => set({ configWarning: undefined }),
+  applyLoadedSave: (meta) => {
+    set((state) => ({
+      // 進行表の見出しと進み具合を、そのセーブの時点に戻します。項目そのものは
+      // ファイルとして復元されているので、次のCodexの計画更新で上書きされます。
+      roadmap: meta.roadmapTitle
+        ? {
+            title: meta.roadmapTitle,
+            steps: state.roadmap.steps.map((step, index) => ({
+              ...step,
+              status: index < (meta.roadmapDone ?? 0) ? ('done' as const) : ('pending' as const),
+            })),
+            startedAt: meta.createdAt,
+            updatedAt: Date.now(),
+          }
+        : state.roadmap,
+      accountingReport: undefined,
+    }));
+    get().addLog(`セーブ「${meta.label}」を読み込みました`, 'success');
+  },
   handleCodexEvent: (event) => {
     const params = event.params ?? {};
     const method = event.method;
@@ -776,6 +1396,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     // different methods, and some report running totals while others report a
     // single turn.
     const cumulativeUsage =
+      // Current App Server versions publish a dedicated notification shaped as
+      // { tokenUsage: { total, last } }. This is the fastest and authoritative
+      // per-thread source, emitted after each upstream model response.
+      readUsage(valueAt(params, 'tokenUsage', 'total')) ??
+      readUsage(valueAt(params, 'token_usage', 'total')) ??
       readUsage(valueAt(params, 'info', 'total_token_usage')) ??
       readUsage(valueAt(params, 'info', 'totalTokenUsage')) ??
       readUsage(valueAt(params, 'total_token_usage')) ??
@@ -799,6 +1424,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       });
     }
 
+    // 使用量の枠は account/rateLimits/updated で届きますが、ターンの終わりに
+    // 相乗りしてくることもあるので、どのイベントでも見ておきます。
+    const rateLimits = readRateLimits(valueAt(params, 'rateLimits') ?? valueAt(params, 'rate_limits'));
+    if (rateLimits) set({ rateLimits });
+
     if (method === 'pixel/disconnected') {
       get().setConnection('disconnected', '切断');
       get().addLog(textAt(params, 'message') ?? 'Codexとの接続が終了しました', 'error');
@@ -806,6 +1436,17 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     }
     if (method === 'pixel/diagnostic') {
       get().addLog(textAt(params, 'message') ?? 'Codex diagnostic', 'warning');
+      return;
+    }
+
+    // Codex reports a broken config.toml here and then carries on with
+    // defaults, but `thread/start` still refuses to run — so this warning is
+    // the only early clue the user gets. Surface it instead of swallowing it.
+    if (method === 'configWarning') {
+      const summary = textAt(params, 'summary') ?? 'Codexの設定に問題があります';
+      const details = textAt(params, 'details') ?? '';
+      set({ configWarning: details ? `${summary} ${details}` : summary });
+      get().addLog(`Codexの設定に問題があります：${details || summary}`, 'warning');
       return;
     }
 
@@ -880,10 +1521,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           (agent) => agent.id === threadId || agent.threadId === threadId,
         );
         const isRoot = existing?.isRoot ?? !state.rootThreadId;
-        const manager = state.agentProfiles.find((profile) => profile.id === 'manager-profile');
+        const director = state.agentProfiles.find((profile) => profile.id === 'director-profile');
         const usedNames = new Set(state.agents.map((agent) => agent.name));
         const availableProfile = state.agentProfiles.find(
-          (profile) => profile.hired && profile.id !== 'manager-profile' && !usedNames.has(profile.name),
+          (profile) =>
+            profile.hired && !profile.permanent && !usedNames.has(profile.name),
         );
         const fallback = fallbackAgentIdentities.find((identity) => !usedNames.has(identity.name))
           ?? fallbackAgentIdentities[state.agents.length % fallbackAgentIdentities.length];
@@ -892,13 +1534,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             threadId,
             isRoot,
             name: isRoot
-              ? manager?.name ?? '企画一郎'
+              ? director?.name ?? '東葛大五郎'
               : existing?.name ?? availableProfile?.name ?? fallback.name,
             role: isRoot
-              ? manager?.job ?? '企画・統括担当'
+              ? director?.job ?? 'プロジェクト統括責任者'
               : existing?.role ?? availableProfile?.job ?? fallback.role,
+            duty: isRoot
+              ? 'director'
+              : existing?.duty ?? availableProfile?.duty ?? fallback.duty,
             color: isRoot
-              ? manager?.color ?? colors[0]
+              ? director?.color ?? directorColor
               : existing?.color ?? availableProfile?.color ?? fallback.color,
             status: 'idle',
             activity: '出社しました',
@@ -917,6 +1562,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
     if (method === 'turn/started' && threadId) {
       set((state) => ({
+        projectStartedAt: state.projectStartedAt || Date.now(),
         agents: upsertAgent(state.agents, threadId, {
           turnId,
           status: 'planning',
@@ -947,8 +1593,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           agents: upsertAgent(state.agents, threadId, {
             turnId,
             status: 'planning',
-            activity: 'メッセージを作成中',
-            speech: 'いまの進み具合をまとめているよ',
+            activity: '報告を作成中',
+            // 先頭を出すことで、流れてくる途中でも文の頭から読めます。
+            speech: clip(text, 64) || 'いまの進み具合をまとめているよ',
             speechKind: 'message',
           }),
         };
@@ -957,12 +1604,27 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     }
 
     if ((method === 'item/started' || method === 'item/completed') && threadId) {
-      const status = statusFromItem(itemType);
       const item = valueAt(params, 'item');
+      const phase = textAt(item, 'phase');
+      const description = describeItem(itemType, item, phase);
       const agentMessage = itemType?.toLowerCase() === 'agentmessage'
         ? textAt(item, 'text')
         : undefined;
-      const phase = textAt(item, 'phase');
+
+      // 進行表：Codexが計画（todo/plan）を出したら、そのまま掲示します。
+      const roadmapItems = parseRoadmapItems(item);
+      if (roadmapItems.length) {
+        get().setRoadmap(
+          get().roadmap.title || 'プロジェクト進行表',
+          roadmapItems,
+        );
+      } else if (agentMessage && threadId === get().rootThreadId) {
+        const fromText = parseRoadmapFromText(agentMessage);
+        if (fromText.length && !get().roadmap.steps.length) {
+          get().setRoadmap('プロジェクト進行表', fromText);
+        }
+      }
+
       const completedDeliverables = method === 'item/completed' && itemType?.toLowerCase() === 'filechange'
         ? arrayAt(item, 'changes').flatMap((change, index) => {
             const path = textAt(change, 'path');
@@ -977,6 +1639,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           })
         : [];
       set((state) => ({
+        taskHistory: rememberTask(state.taskHistory, threadId, description.task),
         messages: agentMessage && itemId
           ? upsertMessage(state.messages, {
               id: itemId,
@@ -992,10 +1655,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           : state.deliverables,
         agents: upsertAgent(state.agents, threadId, {
           turnId,
-          status,
-          activity: activityFromItem(itemType),
-          task: itemType ? `${itemType}${itemId ? ` · ${itemId.slice(0, 8)}` : ''}` : 'タスクを処理中',
-          speech: itemSpeech(itemType, phase),
+          status: description.status,
+          activity: description.activity,
+          task: description.task,
+          speech: description.speech,
           speechKind: agentMessage ? 'message' : 'activity',
         }),
       }));
@@ -1016,6 +1679,26 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         }),
       }));
       get().addLog(failed ? 'ターンが失敗しました' : 'ターンが完了しました', failed ? 'error' : 'success', threadId);
+
+      // 全員の手が止まったら、経理担当が会計報告をまとめます。担当者のほうが
+      // あとに終わることもあるので、どのスレッドの完了でも判定します。
+      const state = get();
+      const stillWorking = state.agents.some(
+        (agent) => agent.duty !== 'accountant' && workingStatuses.includes(agent.status),
+      );
+      const rootAgent = state.agents.find(
+        (agent) => agent.id === state.rootThreadId || agent.threadId === state.rootThreadId,
+      );
+      if (!failed && !stillWorking && rootAgent?.status === 'done' && !state.accountingReport) {
+        const roadmap = state.roadmap;
+        if (roadmap.steps.length) {
+          get().setRoadmap(
+            roadmap.title,
+            roadmap.steps.map((step) => ({ ...step, status: 'done' as const })),
+          );
+        }
+        get().buildAccountingReport('全作業の完了');
+      }
       return;
     }
 
@@ -1033,7 +1716,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           const prompt = textAt(params, 'item', 'prompt') ?? '';
           const profile = state.agentProfiles.find(
             (candidate) =>
-              candidate.hired && (
+              candidate.hired && !candidate.permanent && (
                 prompt.toLowerCase().includes(candidate.name.toLowerCase())
                 || prompt.toLowerCase().includes(candidate.job.toLowerCase())
               ),
@@ -1041,12 +1724,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           return upsertAgent(current, childThreadId, {
             parentThreadId: threadId,
             ...(profile
-              ? { name: profile.name, role: profile.job, color: profile.color }
+              ? { name: profile.name, role: profile.job, duty: profile.duty, color: profile.color }
               : { role: 'サブエージェント' }),
             status: 'planning',
-            task: prompt || '親エージェントから依頼を受信',
+            task: prompt || '統括責任者から依頼を受信',
             activity: '担当タスクを確認中',
-            speech: '任せて！担当の作業を始めるね',
+            speech: prompt
+              ? `「${clip(prompt, 34)}」を担当することになったよ`
+              : '任せて！担当の作業を始めるね',
             speechKind: 'activity',
           });
         }, state.agents),

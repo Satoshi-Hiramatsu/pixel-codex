@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { CodexEvent, PixelCodexApi } from './types';
 
 const api: PixelCodexApi = {
@@ -9,12 +9,34 @@ const api: PixelCodexApi = {
     ipcRenderer.invoke('workspace:list-directory', workspace, relativePath),
   openWorkspaceItem: (workspace, itemPath) =>
     ipcRenderer.invoke('workspace:open-item', workspace, itemPath),
+  chooseAttachments: () => ipcRenderer.invoke('attachments:choose'),
+  describeAttachments: (paths) => ipcRenderer.invoke('attachments:describe', paths),
+  saveAttachment: (name, dataBase64) =>
+    ipcRenderer.invoke('attachments:save', name, dataBase64),
+  // ドロップされたファイルの元の場所。取れないときは中身を読んで保存する道に回します。
+  getPathForFile: (file) => {
+    try {
+      return webUtils?.getPathForFile(file) ?? '';
+    } catch {
+      return '';
+    }
+  },
+  getRepoStatus: (workspace) => ipcRenderer.invoke('saves:status', workspace),
+  initRepo: (workspace) => ipcRenderer.invoke('saves:init', workspace),
+  listSaves: (workspace) => ipcRenderer.invoke('saves:list', workspace),
+  createSave: (workspace, label, meta) =>
+    ipcRenderer.invoke('saves:create', workspace, label, meta),
+  loadSave: (workspace, commit) => ipcRenderer.invoke('saves:load', workspace, commit),
+  listCodexProcesses: () => ipcRenderer.invoke('codex:list-processes'),
+  terminateCodexProcesses: (pids) => ipcRenderer.invoke('codex:terminate-processes', pids),
   startCodex: (executable) => ipcRenderer.invoke('codex:start', executable),
   stopCodex: () => ipcRenderer.invoke('codex:stop'),
-  startThread: (cwd) => ipcRenderer.invoke('codex:start-thread', cwd),
-  sendTask: (threadId, text) => ipcRenderer.invoke('codex:send-task', threadId, text),
-  steerAgent: (threadId, turnId, text) =>
-    ipcRenderer.invoke('codex:steer', threadId, turnId, text),
+  startThread: (cwd, options) => ipcRenderer.invoke('codex:start-thread', cwd, options),
+  sendTask: (threadId, text, attachments) =>
+    ipcRenderer.invoke('codex:send-task', threadId, text, attachments),
+  steerAgent: (threadId, turnId, text, attachments) =>
+    ipcRenderer.invoke('codex:steer', threadId, turnId, text, attachments),
+  getRateLimits: () => ipcRenderer.invoke('codex:rate-limits'),
   interruptAgent: (threadId, turnId) =>
     ipcRenderer.invoke('codex:interrupt', threadId, turnId),
   respondApproval: (requestId, decision) =>
