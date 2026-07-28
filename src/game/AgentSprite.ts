@@ -1,9 +1,9 @@
 import Phaser from 'phaser';
 
-import type { AgentState } from '../types';
+import type { AgentPresence, AgentState } from '../types';
 import { animationKey, ensureCharacterSheet, type Facing } from './characterSheet';
 import { RETRO_FONT, textResolutionFor } from './fonts';
-import { center, type Tile } from './officeLayout';
+import { center, doorTile, type Tile } from './officeLayout';
 
 const statusColors: Record<AgentState['status'], number> = {
   idle: 0x94a0a0,
@@ -25,6 +25,9 @@ const breakTimeMessages = [
   'ひと息ついてるよ',
 ];
 
+/** 玄関まで歩ききってから、姿が消えるまでの時間。 */
+const LEAVE_FADE_DURATION = 460;
+
 /** 1マス（40px）を歩ききるのにかける時間。 */
 const STEP_DURATION = 210;
 
@@ -44,11 +47,16 @@ export class AgentSprite extends Phaser.GameObjects.Container {
   private currentSpeech: string;
   private currentSpeechKind?: AgentState['speechKind'];
   private currentColor: number;
+  private currentPresence: AgentPresence;
   private speechTimer?: Phaser.Time.TimerEvent;
   private breakMessageIndex: number;
   private selected = false;
   private facing: Facing = 'down';
   private walkTween?: Phaser.Tweens.TweenChain;
+  /** 退勤中。玄関に着いたらフロアから姿を消します。 */
+  private leaving = false;
+  private fadeTween?: Phaser.Tweens.Tween;
+  private leaveCheck?: Phaser.Time.TimerEvent;
   /** 現在地と目的地はタイル単位で持ち、経路探索と共有します。 */
   private tile: Tile;
   private destination: Tile;
@@ -62,6 +70,9 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.currentSpeech = agent.speech || agent.activity;
     this.currentSpeechKind = agent.speechKind;
     this.currentColor = agent.color;
+    // 出社した状態から始めます。休憩中や退勤済みの人は、直後に呼ばれる
+    // `updateAgent` が移動と退出をそのまま演じてくれます。
+    this.currentPresence = 'working';
     this.tile = { ...tile };
     this.destination = { ...tile };
     this.breakMessageIndex = Phaser.Math.Between(0, breakTimeMessages.length - 1);
@@ -128,7 +139,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.drawSpeech(agent);
     this.drawNameBackground();
     this.drawActivityBackground();
-    this.configureSpeechCycle(agent.status);
+    this.configureSpeechCycle(agent.status, this.currentPresence);
     this.setSize(40, 78);
     this.setInteractive(
       new Phaser.Geom.Rectangle(-20, -40, 40, 78),
@@ -155,7 +166,13 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     return Boolean(this.walkTween?.isPlaying());
   }
 
+  /** 退勤済み。経路探索は、もうフロアにいない人を避ける必要がありません。 */
+  get departed(): boolean {
+    return this.leaving;
+  }
+
   updateAgent(agent: AgentState): void {
+    this.applyPresence(agent.presence ?? 'working');
     if (this.currentColor !== agent.color) {
       this.currentColor = agent.color;
       const sheet = ensureCharacterSheet(this.scene, agent.color);
@@ -185,7 +202,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
       this.currentStatus = agent.status;
       this.drawBadge(agent.status);
       this.drawSpeech(agent);
-      this.configureSpeechCycle(agent.status);
+      this.configureSpeechCycle(agent.status, this.currentPresence);
       const scene = this.scene;
       if (!scene?.tweens || !this.active) return;
       scene.tweens.add({
@@ -195,13 +212,78 @@ export class AgentSprite extends Phaser.GameObjects.Container {
         duration: 120,
         yoyo: true,
       });
-    } else if (speechChanged && agent.status === 'done') {
-      this.configureSpeechCycle(agent.status);
+    } else if (speechChanged && this.currentPresence === 'lounge') {
+      this.configureSpeechCycle(agent.status, this.currentPresence);
     }
+  }
+
+  /**
+   * 出社・休憩・退勤の切り替え。退勤した人は玄関まで歩いてから姿を消し、
+   * 呼び戻されたときは玄関から歩いて入り直します。
+   */
+  private applyPresence(presence: AgentPresence): void {
+    if (presence === this.currentPresence) return;
+    const previous = this.currentPresence;
+    this.currentPresence = presence;
+
+    if (presence === 'left') {
+      this.leaving = true;
+      this.clearSpeechTimer();
+      this.disableInteractive();
+      // 玄関にもう立っていて歩く必要がないときは、そのまま消えます。歩き出す
+      // なら `walkPath` の完了時に消えるので、この確認は空振りになります。
+      this.leaveCheck?.remove(false);
+      this.leaveCheck = this.scene?.time.delayedCall(150, () => {
+        this.leaveCheck = undefined;
+        if (this.leaving && !this.walking) this.fadeOut();
+      });
+      return;
+    }
+
+    this.leaving = false;
+    this.leaveCheck?.remove(false);
+    this.leaveCheck = undefined;
+    if (previous === 'left') this.returnToFloor();
+    this.configureSpeechCycle(this.currentStatus, presence);
+  }
+
+  /** 退勤していた人が呼び戻されたとき。玄関の内側から歩き直します。 */
+  private returnToFloor(): void {
+    this.fadeTween?.remove();
+    this.fadeTween = undefined;
+    this.setAlpha(1);
+    this.setVisible(true);
+    this.setInteractive(
+      new Phaser.Geom.Rectangle(-20, -40, 40, 78),
+      Phaser.Geom.Rectangle.Contains,
+    );
+    this.snapTo(doorTile);
+  }
+
+  private fadeOut(): void {
+    const scene = this.scene;
+    if (!scene?.tweens || !this.active) {
+      this.setVisible(false);
+      return;
+    }
+    this.fadeTween?.remove();
+    this.fadeTween = scene.tweens.add({
+      targets: this,
+      alpha: 0,
+      duration: LEAVE_FADE_DURATION,
+      onComplete: () => {
+        this.fadeTween = undefined;
+        this.setVisible(false);
+      },
+    });
   }
 
   destroy(fromScene?: boolean): void {
     this.clearSpeechTimer();
+    this.leaveCheck?.remove(false);
+    this.leaveCheck = undefined;
+    this.fadeTween?.remove();
+    this.fadeTween = undefined;
     this.walkTween?.remove();
     this.walkTween = undefined;
     super.destroy(fromScene);
@@ -239,6 +321,8 @@ export class AgentSprite extends Phaser.GameObjects.Container {
       onComplete: () => {
         this.walkTween = undefined;
         this.playWalk(false);
+        // 玄関に着いた退勤者は、ここでフロアから姿を消します。
+        if (this.leaving) this.fadeOut();
       },
     });
   }
@@ -258,6 +342,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.destination = { ...tile };
     this.setPosition(center(tile.col), center(tile.row));
     this.playWalk(false);
+    if (this.leaving) this.fadeOut();
   }
 
   setSelected(selected: boolean): void {
@@ -350,11 +435,13 @@ export class AgentSprite extends Phaser.GameObjects.Container {
       .strokeRect(-Math.ceil(width / 2), top, width, height);
   }
 
-  private configureSpeechCycle(status: AgentState['status']): void {
+  private configureSpeechCycle(status: AgentState['status'], presence: AgentPresence): void {
     this.clearSpeechTimer();
+    if (presence === 'left') return;
     this.speechBubble.setVisible(true);
     this.speechLabel.setVisible(true);
-    if (status !== 'done') return;
+    // 休憩スペースに移った人だけが、ときどき雑談をこぼします。
+    if (presence !== 'lounge' && status !== 'done') return;
     this.speechTimer = this.scene.time.delayedCall(5000, () => {
       this.hideSpeech();
       this.scheduleBreakMessage(Phaser.Math.Between(2200, 3800));

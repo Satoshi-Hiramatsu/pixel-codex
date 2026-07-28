@@ -8,6 +8,7 @@ import {
   buildWalkableGrid,
   center,
   COLUMNS,
+  doorTile,
   entrance,
   furniture,
   px,
@@ -493,8 +494,16 @@ export class OfficeScene extends Phaser.Scene {
     // 取り合ったり、すでに座っている人の上に重なったりしなくなります。
     const claimed = new Set<number>();
     const targets = new Map<string, Tile>();
+    let loungeSeat = 0;
     for (const agent of agents) {
-      const preferred = stationFor(agent.status, agent.duty);
+      const presence = agent.presence ?? 'working';
+      // 退勤する人は玄関へ。もうフロアにいないので、席は確保しません。
+      if (presence === 'left') {
+        targets.set(agent.id, doorTile);
+        continue;
+      }
+      const preferred = stationFor(agent.status, agent.duty, presence, loungeSeat);
+      if (presence === 'lounge') loungeSeat += 1;
       const target = findFreeTile(this.walkable, preferred, claimed);
       claimed.add(tileKey(target.col, target.row));
       targets.set(agent.id, target);
@@ -531,6 +540,8 @@ export class OfficeScene extends Phaser.Scene {
     const blocked = new Set<number>();
     for (const [otherId, otherSprite] of this.sprites) {
       if (otherId === agentId) continue;
+      // 退勤した人はフロアにいないので、通り道として数えます。
+      if (otherSprite.departed) continue;
       // 立ち止まっている人は動かないので確実な障害物。歩いている人は
       // すれ違えるように、目的地だけを避けます。
       const otherTarget = targets.get(otherId) ?? otherSprite.targetTile;

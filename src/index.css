@@ -175,6 +175,11 @@ button { color: inherit; }
 .floor-roster-row:hover { border-color: #397a9a; background: #fff8dc; transform: translateY(-1px); }
 .floor-roster-row.selected { border-color: #246487; box-shadow: inset 5px 0 0 #397da4, inset 0 -3px 0 #c4b078, 3px 3px 0 rgba(79,53,28,.28); }
 .floor-roster-row .roster-number { color: #a66532; font: 900 9px Consolas, monospace; }
+/* 休憩中は少し落ち着かせ、退勤した人は名簿の上でも灰色にします。 */
+.floor-roster-row.lounge { background: #f7e9c4; }
+.floor-roster-row.lounge .agent-copy small { color: #a1751f; }
+.floor-roster-row.left { opacity: .5; background: #ded1b3; }
+.floor-roster-row.left .agent-copy small { color: #6f6552; }
 /* フロアのキャラと同じスプライトを、拡大しても滲まないよう等倍のまま置きます。 */
 .roster-avatar { display: block; width: 32px; height: 40px; image-rendering: pixelated; }
 .floor-roster-row .agent-copy { gap: 2px; }
@@ -383,7 +388,7 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .chalk-tray i:nth-child(3) { background: #a8cddd; transform: rotate(-1deg); }
 .chalk-tray span { margin-left: auto; color: #d6b785; font: 8px Consolas, monospace; letter-spacing: 1.5px; }
 
-/* ---- 報酬メーター（トークン課金の可視化） ---- */
+/* ---- 発生経費メーター（トークン課金の可視化） ---- */
 .payroll-bar {
   display: grid;
   grid-template-columns: 54px minmax(190px, auto) minmax(92px, .5fr) auto minmax(300px, 1fr) auto;
@@ -442,6 +447,14 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
   font: 11px var(--retro-font);
 }
 .payroll-open:hover { background: #ffe293; transform: translateY(-1px); }
+.payroll-actions { display: flex; flex-direction: column; gap: 5px; }
+/* メーターの締め直し。会計報告は消えないので、押し間違えても取り返しはつきます。 */
+.payroll-clear {
+  height: 24px; padding: 0 10px; color: #ffdede;
+  border: 2px solid #7c3a44; background: #4d2530; cursor: pointer;
+  font: 9px var(--retro-font); white-space: nowrap;
+}
+.payroll-clear:hover { background: #6c3441; }
 
 .payroll-backdrop { position: fixed; inset: 0; z-index: 19; display: grid; place-items: center; padding: 28px; background: rgba(12, 6, 22, .84); }
 .payroll-window { width: min(1060px, calc(100vw - 56px)); height: min(740px, calc(100vh - 56px)); display: flex; flex-direction: column; overflow: hidden; color: #eadfff; border: 6px solid #3d2a5e; outline: 3px solid #f0bd55; background: #241a38; box-shadow: inset 0 0 0 2px #5b428b, 12px 14px 0 rgba(0,0,0,.55); }
@@ -589,14 +602,19 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 @keyframes roadmap-pulse { 50% { opacity: .45; transform: scale(.76); } }
 .roadmap-milestones { min-width: 0; display: flex; overflow-x: auto; overflow-y: hidden; padding: 2px 3px 1px; scrollbar-width: thin; }
 .roadmap-milestone { position: relative; min-width: 70px; flex: 1 0 70px; display: flex; flex-direction: column; align-items: center; gap: 4px; color: #91aa99; text-align: center; }
-.roadmap-milestone:not(:last-child)::after { content: ''; position: absolute; z-index: 0; top: 10px; left: calc(50% + 12px); width: calc(100% - 24px); height: 4px; background: #52675b; box-shadow: 0 1px 0 #10241d; }
-.roadmap-milestone.done:not(:last-child)::after { background: #70ca8a; }
+/* 工程をつなぐ線。進んだぶんだけ左から塗るので、現在地が線の切れ目で分かります。 */
+.roadmap-link { position: absolute; z-index: 0; top: 10px; left: calc(50% + 12px); width: calc(100% - 24px); height: 4px; overflow: hidden; background: #52675b; box-shadow: 0 1px 0 #10241d; }
+.roadmap-link b { display: block; height: 100%; background: #70ca8a; transition: width .45s ease-out; }
+.roadmap-link.active b { background: repeating-linear-gradient(90deg, #f3d778 0 5px, #d9b455 5px 10px); }
 .roadmap-milestone i { position: relative; z-index: 1; width: 24px; height: 24px; display: grid; place-items: center; margin: 0; color: #aebbb3; border: 3px solid #30493d; border-radius: 50%; background: #52675b; font: 900 9px Consolas, monospace; }
 .roadmap-milestone.active i { color: #3b2b13; border-color: #c29136; background: #f0bd55; box-shadow: 0 0 0 3px rgba(240,189,85,.15), 0 0 10px rgba(240,189,85,.45); animation: roadmap-pulse 1.4s ease-in-out infinite; }
 .roadmap-milestone.done i { color: #173222; border-color: #4c9a64; background: #70ca8a; }
+/* まだ誰も着手していないときの「次はここ」。完了ぶんとの境目を分かりやすくします。 */
+.roadmap-milestone.current:not(.active) i { color: #eaf3ec; border-color: #7fae92; background: #3d6350; box-shadow: 0 0 0 3px rgba(143,208,166,.14); }
 .roadmap-milestone small { width: 100%; overflow: hidden; color: inherit; font-family: "Yu Gothic UI", Meiryo, sans-serif; font-size: 8px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .roadmap-milestone.active small { color: #ffe39a; font-weight: 700; }
 .roadmap-milestone.done small { color: #a9d9b6; }
+.roadmap-milestone.current:not(.active) small { color: #d3e6d8; font-weight: 700; }
 .roadmap-milestones.empty { opacity: .5; }
 .roadmap-gauge { display: flex; align-items: center; gap: 9px; }
 .roadmap-gauge-track { flex: 1; height: 14px; overflow: hidden; border: 2px solid #10241d; background: #14312a; box-shadow: inset 0 0 0 1px #3d6d5a; }
@@ -605,6 +623,84 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .roadmap-meta { display: flex; flex-direction: column; gap: 3px; color: #9fbfa8; font-family: "Yu Gothic UI", Meiryo, sans-serif; font-size: 9px; text-align: right; }
 .roadmap-open { height: 32px; padding: 0 12px; color: #1e3329; border: 3px solid #12261f; background: #8fd0a6; box-shadow: 3px 3px 0 rgba(5,12,9,.5); cursor: pointer; font: 10px var(--retro-font); }
 .roadmap-open:hover { background: #a9e0bd; transform: translateY(-1px); }
+
+/* 作業看板：いま誰が何をしているかを、フロアの真上に大きく掲げる木の立て看板。 */
+.worksign-bar {
+  min-height: 84px;
+  display: grid;
+  grid-template-columns: 106px minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 14px;
+  padding: 9px 20px;
+  color: #f6ecd3;
+  border-bottom: 4px solid #7c4f20;
+  background: repeating-linear-gradient(135deg, #33261a 0 14px, #3b2d1f 14px 28px);
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,.34), 0 3px 0 rgba(12,7,3,.5);
+  font-family: var(--retro-font);
+  z-index: 1;
+}
+.worksign-plate {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  padding: 4px 6px;
+  border: 3px solid #f0d79a; background: #7a4a22;
+  box-shadow: inset 0 0 0 2px #94612c, 3px 3px 0 rgba(12,7,3,.5);
+}
+.worksign-plate span { color: #f3ca8a; font: 700 7px Consolas, monospace; letter-spacing: 1.4px; }
+.worksign-plate strong { color: #fff6d5; font-size: 15px; font-weight: 400; }
+.worksign-plate b {
+  min-width: 30px; padding: 1px 6px; color: #3b2b13; background: #f0bd55;
+  box-shadow: 2px 2px 0 rgba(12,7,3,.45);
+  font: 900 13px Consolas, monospace; text-align: center;
+}
+.worksign-cards { min-width: 0; display: flex; align-items: stretch; gap: 10px; }
+.worksign-card {
+  min-width: 0; flex: 1 1 0; display: grid; grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center; gap: 10px;
+  padding: 7px 12px 7px 9px;
+  color: #33291a; text-align: left; cursor: pointer;
+  border: 3px solid #6d4520; background: #f3e3ba;
+  box-shadow: inset 0 -4px 0 #d9c393, 4px 4px 0 rgba(12,7,3,.42);
+}
+.worksign-card:hover { background: #fdf3d2; transform: translateY(-1px); }
+.worksign-card img { display: block; width: 32px; height: 40px; image-rendering: pixelated; }
+.worksign-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.worksign-who { display: flex; align-items: baseline; gap: 8px; }
+.worksign-who b { overflow: hidden; color: #4a3418; font-size: 12px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.worksign-who small { flex: 0 0 auto; color: #8a6c3e; font: 9px "Yu Gothic UI", Meiryo, sans-serif; }
+.worksign-headline {
+  overflow: hidden;
+  color: #2b2114; font-size: 19px; font-weight: 400; line-height: 1.15;
+  text-shadow: 1px 1px 0 rgba(255,255,255,.5);
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.worksign-headline::after {
+  content: '▊'; margin-left: 5px; color: #b4762c; font-size: 13px;
+  animation: worksign-blink 1s steps(2) infinite;
+}
+@keyframes worksign-blink { 50% { opacity: 0; } }
+/* 承認・回答待ちは、ひと目で「こちらの番だ」と分かる赤い看板にします。 */
+.worksign-card.attention { border-color: #8c3520; background: #f7d8b4; box-shadow: inset 0 -4px 0 #dfb488, 4px 4px 0 rgba(12,7,3,.42); }
+.worksign-card.attention .worksign-headline { color: #8a2f16; }
+.worksign-card.attention .worksign-headline::after { color: #c4472a; animation-duration: .6s; }
+.worksign-empty {
+  flex: 1; margin: 0; display: flex; align-items: center; padding: 0 14px;
+  color: #b09a70; border: 3px dashed #6d5936; background: rgba(0,0,0,.16);
+  font-size: 12px;
+}
+.worksign-more {
+  flex: 0 0 auto; display: grid; place-items: center; padding: 0 10px;
+  color: #f0d79a; border: 3px solid #6d4520; background: #4c3620;
+  font-size: 11px;
+}
+.worksign-away {
+  display: flex; flex-direction: column; justify-content: center; gap: 5px;
+  padding-left: 14px; border-left: 3px solid #56391c;
+}
+.worksign-away span { display: flex; align-items: center; gap: 6px; color: #c9b189; font-size: 10px; }
+.worksign-away i { width: 9px; height: 9px; border: 2px solid #241708; }
+.worksign-away .rest i { background: #f0bd55; }
+.worksign-away .left i { background: #6b7a80; }
+.worksign-away b { min-width: 18px; color: #fff2c5; font: 900 12px Consolas, monospace; text-align: right; }
 
 .roadmap-backdrop { position: fixed; inset: 0; z-index: 19; display: grid; place-items: center; padding: 28px; background: rgba(6, 16, 12, .82); }
 .roadmap-window { width: min(900px, calc(100vw - 56px)); height: min(700px, calc(100vh - 56px)); display: flex; flex-direction: column; overflow: hidden; color: #e9f2e6; border: 6px solid #4b3524; outline: 3px solid #d9b455; background: #1c3a30; box-shadow: inset 0 0 0 2px #3f6b58, 12px 14px 0 rgba(0,0,0,.55); }
@@ -720,6 +816,8 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .report-history-bar > strong { color: #8fd0a6; font: 9px Consolas, monospace; white-space: nowrap; }
 .report-history-bar > button { height: 32px; padding: 0 11px; color: #302245; border: 2px solid #5b4481; background: #c7b0f0; cursor: pointer; font: 9px var(--retro-font); }
 .report-history-bar > button:hover { background: #dcc9ff; }
+.report-history-bar > button.report-reset { color: #ffdede; border-color: #7c3a44; background: #4d2530; }
+.report-history-bar > button.report-reset:hover { background: #6c3441; }
 .report-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 18px; border-bottom: 3px solid #4a3a70; background: #2a2140; }
 .report-head > div:first-child { min-width: 0; }
 .report-head strong { display: block; color: #fff3d6; font: 400 16px var(--retro-font); }

@@ -17,6 +17,7 @@ import {
   totalTokens,
 } from './costs';
 import { characterPortrait } from './game/characterSheet';
+import { roomNameFor } from './game/officeLayout';
 import { PhaserCanvas } from './game/PhaserCanvas';
 import { effortOptions, modelLabel, modelOptions, resolveModelId } from './models';
 import { useAgentStore } from './stores/agentStore';
@@ -76,6 +77,10 @@ const roadmapStatusLabels = {
   done: '完了',
 } as const;
 
+/**
+ * 工程を左から右へ並べた進み具合の帯。「どこまで進んだか」が一目で分かるように、
+ * 通り過ぎた区間は緑、作業中の区間は途中まで金色に塗ります。
+ */
 function RoadmapMilestones({ steps }: { steps: RoadmapStep[] }): React.JSX.Element {
   const visibleSteps = steps.length
     ? steps
@@ -84,15 +89,128 @@ function RoadmapMilestones({ steps }: { steps: RoadmapStep[] }): React.JSX.Eleme
         { id: 'placeholder-2', title: '計画', status: 'pending' as const },
         { id: 'placeholder-3', title: '完了', status: 'pending' as const },
       ];
+  // 現在地は「作業中の工程」。まだ始まっていなければ、完了した数の次が現在地です。
+  const activeIndex = visibleSteps.findIndex((step) => step.status === 'active');
+  const currentIndex = activeIndex >= 0
+    ? activeIndex
+    : visibleSteps.filter((step) => step.status === 'done').length;
   return (
     <div className={`roadmap-milestones ${steps.length ? '' : 'empty'}`} aria-label="工程マイルストーン">
-      {visibleSteps.map((step, index) => (
-        <div className={`roadmap-milestone ${step.status}`} key={step.id}>
-          <i aria-hidden="true">{step.status === 'done' ? '✓' : index + 1}</i>
-          <small title={step.title}>{step.title}</small>
-        </div>
-      ))}
+      {visibleSteps.map((step, index) => {
+        // 工程と工程をつなぐ線。完了ぶんは塗りきり、作業中はその工程の半分まで塗ります。
+        const linkFill = step.status === 'done' ? 100 : step.status === 'active' ? 50 : 0;
+        const isCurrent = index === currentIndex && step.status !== 'done';
+        return (
+          <div
+            className={`roadmap-milestone ${step.status} ${isCurrent ? 'current' : ''}`}
+            key={step.id}
+          >
+            {index < visibleSteps.length - 1 && (
+              <span className={`roadmap-link ${step.status}`} aria-hidden="true">
+                <b style={{ width: `${linkFill}%` }} />
+              </span>
+            )}
+            <i aria-hidden="true">{step.status === 'done' ? '✓' : index + 1}</i>
+            <small title={step.title}>{step.title}</small>
+          </div>
+        );
+      })}
     </div>
+  );
+}
+
+/**
+ * 看板に大きく出す「〇〇中」。エージェントの活動文はもともと 「App.tsx を編集中」
+ * のように終わるので、そのまま使えるときは使い、そうでないときだけ状態名に
+ * 置き換えます。看板の文字はすべて「中」で終わる形にそろえます。
+ */
+const signHeadlines: Record<AgentState['status'], string> = {
+  idle: '次の指示を待機中',
+  planning: '進め方を検討中',
+  researching: '資料を調査中',
+  coding: 'コードを実装中',
+  running: 'コマンドを実行中',
+  accounting: '使用量を記帳中',
+  approval: 'あなたの返事を待機中',
+  done: 'ひと息ついて休憩中',
+  error: 'エラーを確認中',
+};
+
+const signboardLimit = 4;
+
+interface SignEntry {
+  id: string;
+  name: string;
+  role: string;
+  room: string;
+  color: number;
+  headline: string;
+  tone: 'attention' | 'work';
+}
+
+function signHeadline(agent: AgentState): string {
+  const activity = agent.activity.replace(/\s+/g, ' ').trim();
+  if (/中$/.test(activity)) return activity;
+  return signHeadlines[agent.status];
+}
+
+/**
+ * 「いま誰が何をしているか」だけを、フロアの上に大きく掲げる看板です。
+ * 承認・回答待ちが最優先、次に手を動かしている担当が並び、休憩と退勤は
+ * 右端に人数だけまとめます。
+ */
+function WorkSignboard({
+  entries,
+  hidden,
+  resting,
+  left,
+  idleNote,
+  onSelect,
+}: {
+  entries: SignEntry[];
+  hidden: number;
+  resting: number;
+  left: number;
+  idleNote: string;
+  onSelect: (id: string) => void;
+}): React.JSX.Element {
+  return (
+    <section className="worksign-bar" aria-label="いまの作業看板">
+      <div className="worksign-plate">
+        <span>NOW WORKING</span>
+        <strong>作業中</strong>
+        <b>{entries.length + hidden}</b>
+      </div>
+      <div className="worksign-cards">
+        {entries.length === 0 ? (
+          <p className="worksign-empty">{idleNote}</p>
+        ) : (
+          entries.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className={`worksign-card ${entry.tone}`}
+              onClick={() => onSelect(entry.id)}
+              title={`${entry.name}（${entry.role}）｜${entry.headline}`}
+            >
+              <img src={characterPortrait(entry.color)} alt="" width={32} height={40} />
+              <span className="worksign-copy">
+                <span className="worksign-who">
+                  <b>{entry.name}</b>
+                  <small>{entry.room}</small>
+                </span>
+                <strong className="worksign-headline">{entry.headline}</strong>
+              </span>
+            </button>
+          ))
+        )}
+        {hidden > 0 && <span className="worksign-more">ほか{hidden}名</span>}
+      </div>
+      <div className="worksign-away">
+        <span className="rest"><i />休憩 <b>{resting}</b></span>
+        <span className="left"><i />退勤 <b>{left}</b></span>
+      </div>
+    </section>
   );
 }
 
@@ -269,6 +387,7 @@ export function App(): React.JSX.Element {
     removeAgentProfile,
     startProject,
     narrateProgress,
+    reviewAttendance,
     buildAccountingReport,
     openAccountingReport,
     applyLoadedSave,
@@ -326,6 +445,11 @@ export function App(): React.JSX.Element {
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) ?? agents[0],
     [agents, selectedAgentId],
+  );
+  // 担当者あての指示はすべて統括責任者ごしに伝えるので、その人の状態を引いておきます。
+  const rootAgent = useMemo(
+    () => agents.find((agent) => agent.id === rootThreadId || agent.threadId === rootThreadId),
+    [agents, rootThreadId],
   );
   const finalReports = useMemo(
     () => messages.filter((message) => message.role === 'assistant' && message.phase === 'final_answer'),
@@ -503,6 +627,12 @@ export function App(): React.JSX.Element {
     const timer = window.setInterval(() => narrateProgress(), 12_000);
     return () => window.clearInterval(timer);
   }, [connection, narrateProgress]);
+
+  // 休憩が長引いた担当は「お先に～」と退勤します。
+  useEffect(() => {
+    const timer = window.setInterval(() => reviewAttendance(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [reviewAttendance]);
 
   /**
    * 他のCodexが動いていると App Server につなげないので、先に確認します。
@@ -870,15 +1000,38 @@ export function App(): React.JSX.Element {
   }
 
   /**
+   * ひとつのスレッドへ文章を届けます。作業中なら割り込み（steer）、手が空いていれば
+   * 新しい依頼（turn/start）になります。ターン番号はイベントの届き方で実際より
+   * 古くなることがあるので、割り込みを断られたら新しい依頼として送り直します。
+   */
+  async function deliverToThread(
+    threadId: string,
+    turnId: string | undefined,
+    text: string,
+    attachments: Attachment[],
+  ): Promise<void> {
+    const files = sendableAttachments(attachments);
+    if (turnId) {
+      try {
+        await window.pixelCodex.steerAgent(threadId, turnId, text, files);
+        return;
+      } catch (error) {
+        // サブエージェントへの直接入力は送り直しても通らないので、呼び出し元へ返します。
+        if (errorMessage(error).includes('SUBAGENT_DIRECT_INPUT_BLOCKED')) throw error;
+      }
+    }
+    await window.pixelCodex.sendTask(threadId, text, files);
+  }
+
+  /**
    * 追加指示。Codexはサブエージェントのスレッドへの直接入力を拒否するので
    * （"direct app-server input is not allowed for multi-agent v2 sub-agents"）、
    * 相手が担当者のときは統括責任者あての伝言に切り替えて中継します。
-   * 手が空いていて turn が無いときは、新しいターンとして送ります。
    */
   async function relayInstruction(threadId: string, text: string): Promise<void> {
     const attachments = steerAttachments.attachments;
     const message = `【${selected?.name ?? '担当者'}への追加指示】${text}${attachmentNote(attachments)}\nこの内容を担当者へ伝えて、作業に反映させてください。`;
-    await window.pixelCodex.sendTask(threadId, message, sendableAttachments(attachments));
+    await deliverToThread(threadId, rootAgent?.turnId, message, attachments);
   }
 
   async function steerSelected(): Promise<void> {
@@ -899,22 +1052,19 @@ export function App(): React.JSX.Element {
         if (!rootThreadId) throw new Error('統括責任者のスレッドがまだありません。');
         await relayInstruction(rootThreadId, text);
         addLog('経理担当あての指示を統括責任者に伝えました', 'success', selected.id);
-      } else if (isRootThread && selected.turnId) {
-        await window.pixelCodex.steerAgent(
+      } else if (isRootThread) {
+        // 作業中なら割り込み、手が空いていれば新しい依頼として届きます。
+        await deliverToThread(
           selected.threadId as string,
           selected.turnId,
           withFiles,
-          sendableAttachments(attachments),
+          attachments,
         );
-        addLog('追加指示を送りました', 'success', selected.id);
-      } else if (isRootThread) {
-        // 手が空いているので、そのまま新しい依頼として送ります。
-        await window.pixelCodex.sendTask(
-          selected.threadId as string,
-          withFiles,
-          sendableAttachments(attachments),
+        addLog(
+          selected.turnId ? '追加指示を送りました' : '新しい指示として送りました',
+          'success',
+          selected.id,
         );
-        addLog('新しい指示として送りました', 'success', selected.id);
       } else {
         if (!rootThreadId) throw new Error('統括責任者のスレッドがまだありません。');
         await relayInstruction(rootThreadId, text);
@@ -949,6 +1099,23 @@ export function App(): React.JSX.Element {
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * 「ただいまの発生経費」を0円に戻します。数え直すのはこれから先のぶんだけで、
+   * 保存済みの会計報告はそのまま残ります。
+   */
+  function resetPayroll(): void {
+    if (
+      totalYen > 0 &&
+      !window.confirm(
+        'ただいまの発生経費を0円に戻します。\n保存済みの会計報告は消えません。よろしいですか？',
+      )
+    ) {
+      return;
+    }
+    resetUsage();
+    addLog('発生経費を0円にリセットしました（保存済みの会計報告はそのままです）', 'info');
   }
 
   async function interruptSelected(): Promise<void> {
@@ -1042,6 +1209,62 @@ export function App(): React.JSX.Element {
   const activeCount = agents.filter((agent) =>
     ['planning', 'researching', 'coding', 'running'].includes(agent.status),
   ).length;
+
+  /**
+   * 看板の中身。承認・回答待ちを先頭に、あとは名簿の並びのままにします。
+   * 並び順を変えないのは、カードが動き回ると読みづらくなるためです。
+   */
+  const signboard = useMemo(() => {
+    const waitingId = approval?.agentId ?? questionRequest?.agentId;
+    const working: SignEntry[] = [];
+    const attention: SignEntry[] = [];
+    let resting = 0;
+    let left = 0;
+
+    for (const agent of agents) {
+      const presence = agent.presence ?? 'working';
+      if (presence === 'left') {
+        left += 1;
+        continue;
+      }
+      if (presence === 'lounge') {
+        resting += 1;
+        continue;
+      }
+      const waiting =
+        agent.status === 'approval' || agent.id === waitingId || agent.threadId === waitingId;
+      // 経理担当はプロジェクトの作業ではないので、返事待ちのときだけ載せます。
+      if (!waiting && (agent.virtual || !['planning', 'researching', 'coding', 'running', 'error'].includes(agent.status))) {
+        continue;
+      }
+      const entry: SignEntry = {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        room: roomNameFor(agent.status, agent.duty, presence),
+        color: agent.color,
+        headline: waiting ? 'あなたの返事を待機中' : signHeadline(agent),
+        tone: waiting ? 'attention' : 'work',
+      };
+      if (waiting) attention.push(entry);
+      else working.push(entry);
+    }
+
+    const ordered = [...attention, ...working];
+    return {
+      entries: ordered.slice(0, signboardLimit),
+      hidden: Math.max(0, ordered.length - signboardLimit),
+      resting,
+      left,
+    };
+  }, [agents, approval?.agentId, questionRequest?.agentId]);
+
+  const signboardIdleNote =
+    connection !== 'connected'
+      ? 'Codexへの接続を待っています'
+      : signboard.resting > 0
+        ? `作業はすべて終わりました。${signboard.resting}名が休憩スペースにいます`
+        : '手を動かしている人はいません。指示をどうぞ';
   const progressWaiting = approval
     ? { tone: 'attention', text: 'あなたの承認を待っています' }
     : questionRequest
@@ -1230,10 +1453,10 @@ export function App(): React.JSX.Element {
         </div>
       )}
 
-      <section className="payroll-bar" aria-label="発生報酬額メーター">
+      <section className="payroll-bar" aria-label="発生経費メーター">
         <span className="payroll-coin" key={usageUpdatedAt} aria-hidden="true">￥</span>
         <div className="payroll-readout">
-          <span className="payroll-caption">ただいまの発生報酬額</span>
+          <span className="payroll-caption">ただいまの発生経費</span>
           <strong className="payroll-amount" aria-live="polite">
             <i>￥</i>
             <span className="payroll-digits">{yenDigits.main}</span>
@@ -1306,9 +1529,19 @@ export function App(): React.JSX.Element {
             </div>
           </div>
         </section>
-        <button className="payroll-open" type="button" onClick={() => setPayrollOpen(true)}>
-          明細をひらく →
-        </button>
+        <div className="payroll-actions">
+          <button className="payroll-open" type="button" onClick={() => setPayrollOpen(true)}>
+            明細をひらく →
+          </button>
+          <button
+            className="payroll-clear"
+            type="button"
+            onClick={resetPayroll}
+            title="ここまでの発生経費を0円に戻します。保存済みの会計報告は残ります"
+          >
+            経費を0円にもどす
+          </button>
+        </div>
       </section>
 
       {/* 進行表：統括責任者が引いたロードマップを、いつでも見える場所に掲示します。 */}
@@ -1333,14 +1566,25 @@ export function App(): React.JSX.Element {
         </button>
       </section>
 
+      {/* 作業看板：いま誰が何をしているかを、フロアの上に大きく掲げます。 */}
+      <WorkSignboard
+        entries={signboard.entries}
+        hidden={signboard.hidden}
+        resting={signboard.resting}
+        left={signboard.left}
+        idleNote={signboardIdleNote}
+        onSelect={selectAgent}
+      />
+
       <section className="dashboard">
         <div className="office-panel panel">
           <div className="panel-heading">
             <div><span className="eyebrow">DEV STUDIO</span><h2>開発フロア</h2></div>
             <div className="office-stats">
-              <span><b>{agents.length}</b> 出勤</span>
+              <span><b>{agents.length - signboard.left}</b> 出勤</span>
               <span><b>{activeCount}</b> 稼働中</span>
-              <span><b>{agents.filter((agent) => agent.status === 'approval').length}</b> 承認待ち</span>
+              <span><b>{signboard.resting}</b> 休憩</span>
+              <span><b>{signboard.left}</b> 退勤</span>
             </div>
           </div>
           <div className="office-stage">
@@ -1351,25 +1595,37 @@ export function App(): React.JSX.Element {
                 <strong>{agents.length}名</strong>
               </header>
               <div className="floor-roster-list">
-                {agents.map((agent, index) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    className={`floor-roster-row ${agent.id === selected?.id ? 'selected' : ''}`}
-                    onClick={() => selectAgent(agent.id)}
-                  >
-                    <span className="roster-number">{String(index + 1).padStart(2, '0')}</span>
-                    <img
-                      className="roster-avatar"
-                      src={characterPortrait(agent.color)}
-                      alt=""
-                      width={32}
-                      height={40}
-                    />
-                    <span className="agent-copy"><strong>{agent.name}</strong><small>{agent.role}</small></span>
-                    <span className={`status-dot ${agent.status}`} title={statusLabels[agent.status]} />
-                  </button>
-                ))}
+                {agents.map((agent, index) => {
+                  const presence = agent.presence ?? 'working';
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      className={`floor-roster-row ${agent.id === selected?.id ? 'selected' : ''} ${presence}`}
+                      onClick={() => selectAgent(agent.id)}
+                    >
+                      <span className="roster-number">{String(index + 1).padStart(2, '0')}</span>
+                      <img
+                        className="roster-avatar"
+                        src={characterPortrait(agent.color)}
+                        alt=""
+                        width={32}
+                        height={40}
+                      />
+                      <span className="agent-copy">
+                        <strong>{agent.name}</strong>
+                        <small>
+                          {presence === 'working'
+                            ? agent.role
+                            : presence === 'lounge'
+                              ? '休憩スペースで待機中'
+                              : '退勤しました'}
+                        </small>
+                      </span>
+                      <span className={`status-dot ${agent.status}`} title={statusLabels[agent.status]} />
+                    </button>
+                  );
+                })}
               </div>
               <footer><span>● 稼働状況</span><strong>{activeCount}/{agents.length}</strong></footer>
             </section>
@@ -1439,9 +1695,11 @@ export function App(): React.JSX.Element {
                 />
               </div>
               <p className="detail-hint">
-                {selected.threadId === rootThreadId
-                  ? '統括責任者には直接届きます。作業中なら割り込み、手が空いていれば新しい依頼になります。'
-                  : '担当者には直接送れない決まりなので、統括責任者に伝えて反映してもらいます。'}
+                {connection !== 'connected'
+                  ? 'Codexへ接続すると、この欄から指示を送れるようになります。'
+                  : selected.threadId === rootThreadId
+                    ? '統括責任者には直接届きます。作業中なら割り込み、手が空いていれば新しい依頼になります。'
+                    : '担当者には直接送れない決まりなので、統括責任者に伝えて反映してもらいます。'}
                 <br />Ctrl + Enter でも送れます。
               </p>
               <div className="detail-actions">
@@ -1830,13 +2088,13 @@ export function App(): React.JSX.Element {
               <div className="title-icon">￥</div>
               <div>
                 <span>TOKEN PAYROLL</span>
-                <h2 id="payroll-title">給与明細・トークン使用量</h2>
+                <h2 id="payroll-title">発生経費明細・トークン使用量</h2>
               </div>
               <button type="button" aria-label="明細を閉じる" onClick={() => setPayrollOpen(false)}>×</button>
             </header>
 
             <div className="payroll-hero">
-              <span className="payroll-hero-caption">ただいまの発生報酬額</span>
+              <span className="payroll-hero-caption">ただいまの発生経費</span>
               <strong className="payroll-hero-amount">
                 <i>￥</i>{yenDigits.main}<em>.{yenDigits.fraction}</em><b>円</b>
               </strong>
@@ -2004,10 +2262,7 @@ export function App(): React.JSX.Element {
                   <button
                     className="payroll-reset"
                     type="button"
-                    onClick={() => {
-                      resetUsage();
-                      addLog('報酬メーターを0円にリセットしました', 'info');
-                    }}
+                    onClick={resetPayroll}
                   >メーターを0円にもどす</button>
                 </div>
               </section>
@@ -2315,6 +2570,14 @@ export function App(): React.JSX.Element {
               <strong>{accountingReports.length}件を自動保存</strong>
               <button type="button" onClick={() => buildAccountingReport('途中経過の保存')}>
                 現在の会計を保存
+              </button>
+              <button
+                className="report-reset"
+                type="button"
+                onClick={resetPayroll}
+                title="この報告までの発生経費を締めて、メーターを0円から数え直します"
+              >
+                締めて0円にもどす
               </button>
             </div>
             <div className="report-head">

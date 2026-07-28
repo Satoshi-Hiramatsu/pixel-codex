@@ -11,6 +11,14 @@ export type AgentStatus =
   | 'done'
   | 'error';
 
+/**
+ * オフィスのどこにいるか。作業が始まると自動的に `working` へ戻ります。
+ * - working … 自分の持ち場（担当部屋）で作業中
+ * - lounge  … 手が空いたので休憩スペースにいる
+ * - left    … 「お先に～」と退勤して、もうフロアにいない
+ */
+export type AgentPresence = 'working' | 'lounge' | 'left';
+
 /** What an employee is hired to do. It decides which room they work in. */
 export type AgentDuty =
   | 'director'
@@ -45,6 +53,10 @@ export interface AgentState {
   speech?: string;
   speechKind?: 'activity' | 'message' | 'question';
   color: number;
+  /** 省略時は `working`。休憩・退勤の行き先はここだけで決まります。 */
+  presence?: AgentPresence;
+  /** 手が空いた時刻。休憩から退勤へ移るまでの時間を計るのに使います。 */
+  restingSince?: number;
   isRoot?: boolean;
   /** Local-only staff (the accountant) never receive a Codex thread. */
   virtual?: boolean;

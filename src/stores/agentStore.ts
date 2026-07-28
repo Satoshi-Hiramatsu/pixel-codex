@@ -165,6 +165,8 @@ interface AgentStore {
   setRoadmap: (title: string, steps: Array<Pick<RoadmapStep, 'title' | 'owner' | 'status'>>) => void;
   /** The director's idle chatter: progress percent and a rough finish time. */
   narrateProgress: () => void;
+  /** 休憩が長くなった担当を「お先に～」と退勤させます。定期的に呼ばれます。 */
+  reviewAttendance: () => void;
   buildAccountingReport: (reason: string) => void;
   openAccountingReport: (id: string) => void;
   clearAccountingReport: () => void;
@@ -975,11 +977,32 @@ function describeApproval(
   };
 }
 
+/** 手を動かしている状態。看板と、休憩・退勤の判定はすべてこれを基準にします。 */
+const workingStatuses: AgentStatus[] = ['planning', 'researching', 'coding', 'running'];
+
+/** 休憩スペースでひと息ついてから「お先に～」と退勤するまでの時間。 */
+const leaveAfterRestMs = 40_000;
+
+/**
+ * 仕事が入ったら、休憩中でも退勤済みでも持ち場に戻ります。逆に手が止まった
+ * ことを表す `done` は、ここでは触らず `turn/completed` 側で休憩に回します。
+ */
+function withPresence(patch: Partial<AgentState>): Partial<AgentState> {
+  if (!patch.status) return patch;
+  const backToWork =
+    workingStatuses.includes(patch.status) ||
+    patch.status === 'approval' ||
+    patch.status === 'error';
+  if (!backToWork) return patch;
+  return { ...patch, presence: 'working', restingSince: undefined };
+}
+
 function upsertAgent(
   agents: AgentState[],
   id: string,
-  patch: Partial<AgentState>,
+  rawPatch: Partial<AgentState>,
 ): AgentState[] {
+  const patch = withPresence(rawPatch);
   const index = agents.findIndex((agent) => agent.id === id || agent.threadId === id);
   if (index < 0) {
     const fallback = fallbackAgentIdentities[Math.max(0, agents.length - 1) % fallbackAgentIdentities.length];
@@ -995,6 +1018,7 @@ function upsertAgent(
         task: '指示を待っています',
         activity: '待機中',
         color: patch.isRoot ? directorColor : fallback.color,
+        presence: 'working',
         updatedAt: Date.now(),
         ...patch,
       },
@@ -1034,8 +1058,6 @@ function reportTimestamp(time: number): string {
   const two = (value: number): string => String(value).padStart(2, '0');
   return `${date.getFullYear()}/${two(date.getMonth() + 1)}/${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`;
 }
-
-const workingStatuses: AgentStatus[] = ['planning', 'researching', 'coding', 'running'];
 
 export const useAgentStore = create<AgentStore>((set, get) => ({
   agents: demoAgents,
@@ -1280,6 +1302,52 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       }),
     }));
   },
+  reviewAttendance: () => {
+    const now = Date.now();
+
+    // 完了の知らせだけ届いて席に残っている人を、休憩スペースへ送り出します。
+    const stranded = get().agents.filter(
+      (agent) => agent.status === 'done' && (agent.presence ?? 'working') === 'working',
+    );
+    if (stranded.length) {
+      set((current) => ({
+        agents: stranded.reduce(
+          (agents, agent) =>
+            upsertAgent(agents, agent.id, { presence: 'lounge', restingSince: now }),
+          current.agents,
+        ),
+      }));
+    }
+
+    const state = get();
+    // 統括責任者と経理担当は会社側の常駐なので、いつまでもフロアに残ります。
+    const leaving = state.agents.filter(
+      (agent) =>
+        agent.presence === 'lounge' &&
+        !agent.isRoot &&
+        !agent.virtual &&
+        agent.status !== 'approval' &&
+        agent.status !== 'error' &&
+        now - (agent.restingSince ?? now) >= leaveAfterRestMs,
+    );
+    if (!leaving.length) return;
+
+    set((current) => ({
+      agents: leaving.reduce(
+        (agents, agent) =>
+          upsertAgent(agents, agent.id, {
+            presence: 'left',
+            activity: '退勤しました',
+            speech: 'お先に失礼します～',
+            speechKind: 'message',
+          }),
+        current.agents,
+      ),
+    }));
+    for (const agent of leaving) {
+      get().addLog(`${agent.name}が退勤しました（お先に失礼します）`, 'info', agent.id);
+    }
+  },
   buildAccountingReport: (reason) => {
     const state = get();
     const planId = state.costSettings.planId;
@@ -1389,6 +1457,12 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       textAt(params, 'thread', 'id') ??
       textAt(params, 'item', 'threadId');
     const turnId = textAt(params, 'turnId') ?? textAt(params, 'turn', 'id');
+    /**
+     * 走っているターンの番号は「割り込みで指示できるか」の判断に使うので、
+     * 番号の入っていないイベントで消えてしまわないようにします。
+     * 消すのはターンが終わったときだけです。
+     */
+    const turnPatch = turnId ? { turnId } : {};
     const itemType = textAt(params, 'item', 'type');
     const itemId = textAt(params, 'item', 'id') ?? textAt(params, 'itemId');
 
@@ -1469,7 +1543,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               activity: 'あなたの回答を待っています',
               speech: 'ちょっと聞きたいことがあるよ！',
               speechKind: 'question',
-              turnId,
+              ...turnPatch,
             })
           : state.agents,
       }));
@@ -1507,7 +1581,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               activity: '承認を待っています',
               speech: 'このまま進めてもいいかな？',
               speechKind: 'question',
-              turnId,
+              ...turnPatch,
             })
           : state.agents,
       }));
@@ -1549,6 +1623,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             activity: '出社しました',
             speech: '準備できたよ。何をすればいい？',
             speechKind: 'activity',
+            // 退勤したあとに呼び戻されることもあるので、必ず出社状態に戻します。
+            presence: 'working',
+            restingSince: undefined,
           }),
           rootThreadId: state.rootThreadId ?? threadId,
         };
@@ -1564,7 +1641,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       set((state) => ({
         projectStartedAt: state.projectStartedAt || Date.now(),
         agents: upsertAgent(state.agents, threadId, {
-          turnId,
+          ...turnPatch,
           status: 'planning',
           activity: '作業を開始しました',
           speech: 'よし、さっそく始めるね！',
@@ -1591,7 +1668,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             time: Date.now(),
           }),
           agents: upsertAgent(state.agents, threadId, {
-            turnId,
+            ...turnPatch,
             status: 'planning',
             activity: '報告を作成中',
             // 先頭を出すことで、流れてくる途中でも文の頭から読めます。
@@ -1654,7 +1731,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           ? upsertDeliverables(state.deliverables, completedDeliverables)
           : state.deliverables,
         agents: upsertAgent(state.agents, threadId, {
-          turnId,
+          ...turnPatch,
           status: description.status,
           activity: description.activity,
           task: description.task,
@@ -1670,12 +1747,17 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       set((state) => ({
         messages: failed ? state.messages : markLatestAssistantFinal(state.messages, threadId),
         agents: upsertAgent(state.agents, threadId, {
+          // ターンが終わったら番号を消します。残したままだと「作業中」と勘違いして
+          // 追加指示を割り込みで送ろうとして失敗します。
+          turnId: undefined,
           status: failed ? 'error' : 'done',
-          activity: failed ? 'エラーで停止しました' : '作業を完了しました',
+          activity: failed ? 'エラーで停止しました' : '作業を終えて休憩中',
           speech: failed
             ? 'うまくいかなかったみたい。確認してみるね'
             : 'できたよ！黒板を見てね！',
           speechKind: failed ? 'question' as const : 'message' as const,
+          // 手が空いた人は休憩スペースへ。フロアを見れば誰が動いているか分かります。
+          ...(failed ? {} : { presence: 'lounge' as const, restingSince: Date.now() }),
         }),
       }));
       get().addLog(failed ? 'ターンが失敗しました' : 'ターンが完了しました', failed ? 'error' : 'success', threadId);

@@ -1,4 +1,4 @@
-import type { AgentDuty, AgentStatus } from '../types';
+import type { AgentDuty, AgentPresence, AgentStatus } from '../types';
 
 /**
  * The office is a straight top-down view laid out on a square grid.
@@ -180,6 +180,25 @@ const statusStations: Record<AgentStatus, Tile> = {
   error: { col: 5, row: 4 },
 };
 
+/**
+ * 休憩スペースの席。手が空いた社員はここへ集まるので、フロアを見るだけで
+ * 「まだ動いている人」と「終わった人」が離れて見えるようになります。
+ * ソファ寄りから順に埋まり、あふれた分は `findFreeTile` が近くの床へ回します。
+ */
+const loungeSeats: Tile[] = [
+  { col: 4, row: 12 },
+  { col: 5, row: 13 },
+  { col: 4, row: 13 },
+  { col: 5, row: 12 },
+  { col: 7, row: 13 },
+  { col: 7, row: 12 },
+  { col: 11, row: 13 },
+  { col: 12, row: 13 },
+];
+
+/** 退勤する社員が向かう玄関の内側。ここまで歩いたらフロアから消えます。 */
+export const doorTile: Tile = { col: entrance.col + 1, row: ROWS - 2 };
+
 const dutyStations: Partial<Record<AgentDuty, Tile>> = {
   director: { col: 3, row: 3 },
   planner: { col: 11, row: 4 },
@@ -194,9 +213,22 @@ const dutyStations: Partial<Record<AgentDuty, Tile>> = {
 
 /**
  * Working statuses win (a coder who is researching walks to the 資料室), but an
- * agent with nothing to do returns to their own desk.
+ * agent with nothing to do returns to their own desk — unless they have clocked
+ * off, in which case the lounge or the front door decides where they go.
+ *
+ * `seat` spreads the lounge crowd over the sofas instead of piling everyone on
+ * the same cushion; any number is fine, it just wraps round the seat list.
  */
-export function stationFor(status: AgentStatus, duty: AgentDuty): Tile {
+export function stationFor(
+  status: AgentStatus,
+  duty: AgentDuty,
+  presence: AgentPresence = 'working',
+  seat = 0,
+): Tile {
+  if (presence === 'left') return doorTile;
+  if (presence === 'lounge') {
+    return loungeSeats[((seat % loungeSeats.length) + loungeSeats.length) % loungeSeats.length];
+  }
   if (status === 'idle' || status === 'done') {
     return dutyStations[duty] ?? statusStations[status];
   }
@@ -212,8 +244,13 @@ export function zoneAt(col: number, row: number): Zone | undefined {
 }
 
 /** Human-readable room name, used for the 「〜室で作業中」 captions. */
-export function roomNameFor(status: AgentStatus, duty: AgentDuty): string {
-  const station = stationFor(status, duty);
+export function roomNameFor(
+  status: AgentStatus,
+  duty: AgentDuty,
+  presence: AgentPresence = 'working',
+): string {
+  if (presence === 'left') return '退勤';
+  const station = stationFor(status, duty, presence);
   return zoneAt(station.col, station.row)?.label ?? 'フロア';
 }
 
