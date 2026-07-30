@@ -173,6 +173,73 @@ export interface AccountingReport {
   elapsedMs: number;
 }
 
+/**
+ * スキルの系統。RPGの「属性」にあたるもので、一覧の並びと色分けに使います。
+ * 保存ファイルには文字列がそのまま入るので、増やすときは末尾に足してください。
+ */
+export type SkillCategory =
+  | 'coding'
+  | 'planning'
+  | 'guard'
+  | 'research'
+  | 'review'
+  | 'writing'
+  | 'workflow'
+  | 'other';
+
+/**
+ * スキルの置き場所。
+ * - global  … どの作業フォルダでも使える。ユーザーデータ側に保存されます。
+ * - project … いまの作業フォルダ専用。`.pixel-codex/skills/` に保存されます。
+ */
+export type SkillScope = 'global' | 'project';
+
+/**
+ * 装備できるルール1件＝マークダウン1ファイル。
+ * 見出し（name/category/effect）は冒頭のメタ欄に、`detail` は本文に入ります。
+ */
+export interface Skill {
+  /** ファイル名から拡張子を除いたもの。同じ置き場所のなかで一意です。 */
+  id: string;
+  name: string;
+  category: SkillCategory;
+  /** 効果。一覧に1行で出す要約です。 */
+  effect: string;
+  /** 詳細。実際にCodexへ渡す指示文の本体です。 */
+  detail: string;
+  scope: SkillScope;
+  /** どの作業フォルダで生まれたか。他プロジェクトから取り込むときの目印です。 */
+  origin?: string;
+  /** 取り込み元のスキル名。最適化コピーの由来を残します。 */
+  copiedFrom?: string;
+  createdAt: number;
+  updatedAt: number;
+  /** ファイルの絶対パス。`開く`のような操作に使います。 */
+  path: string;
+}
+
+/** 保存する前のスキル。`id` があれば上書き、なければ新規作成になります。 */
+export type SkillDraft = Pick<Skill, 'name' | 'category' | 'effect' | 'detail'> &
+  Partial<Pick<Skill, 'id' | 'origin' | 'copiedFrom'>>;
+
+/** いまの作業フォルダから見たスキルの全体像。 */
+export interface SkillBook {
+  workspace: string;
+  global: Skill[];
+  project: Skill[];
+  /** 装備中のスキルID。`global` / `project` それぞれの id を指します。 */
+  equippedGlobal: string[];
+  equippedProject: string[];
+}
+
+/** 他プロジェクトの本棚。スキルを見つけて持ってくるために使います。 */
+export interface SkillShelf {
+  workspace: string;
+  /** フォルダ名。一覧の見出しに使います。 */
+  name: string;
+  skills: Skill[];
+}
+
 export interface CodexEvent {
   method: string;
   params?: Record<string, unknown>;
@@ -314,6 +381,24 @@ export interface PixelCodexApi {
   saveAttachment: (name: string, dataBase64: string) => Promise<Attachment>;
   /** ドロップされたFileの元の場所。取得できないときは空文字を返します。 */
   getPathForFile: (file: File) => string;
+  /** グローバルと、いまの作業フォルダのスキルをまとめて読み込みます。 */
+  readSkillBook: (workspace: string) => Promise<SkillBook>;
+  /** 新規作成または上書き保存。保存後のスキルを返します。 */
+  saveSkill: (scope: SkillScope, workspace: string, draft: SkillDraft) => Promise<Skill>;
+  deleteSkill: (scope: SkillScope, workspace: string, id: string) => Promise<void>;
+  /** 装備中のスキルIDを置き換えます。返るのは実在するものだけです。 */
+  setEquippedSkills: (
+    scope: SkillScope,
+    workspace: string,
+    ids: string[],
+  ) => Promise<string[]>;
+  /** 渡した作業フォルダのなかから、スキルを持っているものだけを返します。 */
+  listSkillShelves: (workspaces: string[]) => Promise<SkillShelf[]>;
+  /**
+   * 文章ひとつぶんだけCodexに書いてもらいます。オフィスには出社させず、
+   * 使った分の費用だけ「スキル指南役」として計上します。
+   */
+  askCodex: (cwd: string, prompt: string, options?: ThreadOptions) => Promise<string>;
   getRepoStatus: (workspace: string) => Promise<RepoStatus>;
   initRepo: (workspace: string) => Promise<RepoStatus>;
   listSaves: (workspace: string) => Promise<SaveSlot[]>;

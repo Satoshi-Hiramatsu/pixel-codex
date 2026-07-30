@@ -13,7 +13,15 @@ import {
   saveAttachment,
 } from './files/attachments';
 import { createSave, getRepoStatus, initRepo, listSaves, loadSave } from './saves/gitSaves';
-import type { CodexProcessInfo, SaveMeta, ThreadOptions } from './types';
+import {
+  deleteSkill,
+  listSkillShelves,
+  readSkillBook,
+  saveSkill,
+  setEquippedSkills,
+  setUserDataRoot,
+} from './skills/skillStore';
+import type { CodexProcessInfo, SaveMeta, SkillScope, ThreadOptions } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -79,6 +87,11 @@ async function findOtherCodexProcesses(): Promise<CodexProcessInfo[]> {
     // `tasklist` prints "INFO: No tasks" and exits non-zero when nothing matches.
     return [];
   }
+}
+
+/** 画面から届いた置き場所の指定。知らない値はグローバル扱いにします。 */
+function normalizeScope(value: unknown): SkillScope {
+  return value === 'project' ? 'project' : 'global';
 }
 
 function broadcast(channel: string, value: unknown): void {
@@ -156,6 +169,39 @@ function registerIpc(): void {
   });
   ipcMain.handle('attachments:save', (_event, name: string, dataBase64: string) =>
     saveAttachment(attachmentTempRoot(), String(name ?? ''), String(dataBase64 ?? '')),
+  );
+  ipcMain.handle('skills:read-book', (_event, workspace: string) =>
+    readSkillBook(typeof workspace === 'string' ? workspace : ''),
+  );
+  ipcMain.handle(
+    'skills:save',
+    (_event, scope: SkillScope, workspace: string, draft: unknown) =>
+      saveSkill(normalizeScope(scope), String(workspace ?? ''), draft),
+  );
+  ipcMain.handle('skills:delete', (_event, scope: SkillScope, workspace: string, id: string) =>
+    deleteSkill(normalizeScope(scope), String(workspace ?? ''), String(id ?? '')),
+  );
+  ipcMain.handle(
+    'skills:set-equipped',
+    (_event, scope: SkillScope, workspace: string, ids: unknown) =>
+      setEquippedSkills(normalizeScope(scope), String(workspace ?? ''), ids),
+  );
+  ipcMain.handle('skills:list-shelves', (_event, workspaces: unknown) =>
+    listSkillShelves(workspaces),
+  );
+  ipcMain.handle(
+    'codex:ask',
+    (_event, cwd: string, prompt: string, options?: ThreadOptions) => {
+      if (!path.isAbsolute(cwd)) throw new Error('作業フォルダは絶対パスで指定してください。');
+      const text = String(prompt ?? '').trim();
+      if (!text || text.length > 20_000) throw new Error('相談内容が不正です。');
+      const model = typeof options?.model === 'string' ? options.model.trim().slice(0, 120) : '';
+      const effort = typeof options?.effort === 'string' ? options.effort.trim().slice(0, 32) : '';
+      return codex.askOnce(cwd, text, {
+        model: model || undefined,
+        effort: effort || undefined,
+      });
+    },
   );
   ipcMain.handle('saves:status', (_event, workspace: string) => getRepoStatus(workspace));
   ipcMain.handle('saves:init', (_event, workspace: string) => initRepo(workspace));
@@ -250,7 +296,9 @@ function createWindow(): void {
     height: 820,
     width: 1440,
     minHeight: 680,
-    minWidth: 1100,
+    // レイアウトが必要とする幅（index.css の min-width）と揃えます。これより狭くすると
+    // 右カラムが画面の外へ出てしまい、タブにも会議パネルにも手が届きません。
+    minWidth: 1240,
     backgroundColor: '#14191d',
     title: 'Pixel Codex',
     webPreferences: {
@@ -264,6 +312,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  setUserDataRoot(app.getPath('userData'));
   registerIpc();
   createWindow();
 });

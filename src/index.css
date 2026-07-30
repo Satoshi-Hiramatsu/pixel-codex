@@ -21,9 +21,8 @@
 .blackboard-titlebar span,
 .blackboard-titlebar h2,
 .status-pill,
-.floor-roster > header span,
-.floor-roster > header h3,
 .floor-roster > footer,
+.side-tab span,
 .workspace-button span,
 .workspace-button strong,
 .connection-box small,
@@ -31,7 +30,6 @@
 .staff-button span,
 .blackboard-button span,
 .library-button span,
-.payroll-bar,
 .payroll-window,
 footer {
   font-family: var(--retro-font);
@@ -153,25 +151,37 @@ button { color: inherit; }
 .config-warning button { grid-column: 2; grid-row: 1 / 4; width: 30px; height: 30px; padding: 0; color: #ffd2d2; border: 2px solid #8f3c44; background: #3a1c20; cursor: pointer; font-size: 16px; }
 .config-warning button:hover { background: #5c2b31; }
 
-.dashboard { width: 100%; min-width: 0; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(650px, 1fr) clamp(400px, 29vw, 470px); gap: 16px; padding: 16px 18px 11px; }
+/* 左からフロア図・進行表・右カラム。進行表は文字が縦に流れるぶん幅を取らずに済みます。 */
+.dashboard { width: 100%; min-width: 0; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(560px, 1fr) clamp(158px, 12vw, 196px) clamp(330px, 24vw, 400px); gap: 12px; padding: 12px 14px 9px; }
 .panel { border: 3px solid #102b3e; outline: 1px solid #b98231; background: #172f3e; box-shadow: 6px 6px 0 #071722; }
 .office-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.panel-heading { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 16px; border-bottom: 3px solid #d39a38; background: #245575; box-shadow: inset 0 -2px 0 #15384f; }
+.panel-heading { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 14px; border-bottom: 3px solid #d39a38; background: #245575; box-shadow: inset 0 -2px 0 #15384f; }
 .panel-heading.compact { min-height: 48px; padding-top: 9px; padding-bottom: 9px; }
 .panel-heading h2, .detail-title h2 { margin: 4px 0 0; color: #fff3c9; font-size: 15px; font-weight: 700; text-shadow: 2px 2px 0 #102b3e; }
 .office-stats { display: flex; gap: 18px; color: #839094; font: 10px Consolas, monospace; }
 .office-stats b { margin-right: 3px; color: #f0bd55; font-size: 15px; }
-.office-stage { position: relative; flex: 1; min-height: 300px; display: grid; grid-template-columns: minmax(0, 1fr) clamp(202px, 17vw, 242px); gap: 10px; overflow: hidden; padding: 0 10px 0 0; background: #1d2b33; border-bottom: 1px solid #344146; }
+/* 出勤名簿を右カラムのタブへ移したので、フロア図がこの枠を独り占めします。 */
+.office-stage { position: relative; flex: 1; min-height: 300px; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; background: #1d2b33; border-bottom: 1px solid #344146; }
 /* Matches the scene's wall colour so the FIT letterbox looks like part of the floor plan. */
 .office-canvas { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #1d2b33; }
 .office-canvas canvas { display: block; image-rendering: auto; }
-.floor-roster { position: relative; z-index: 12; min-width: 0; min-height: 0; align-self: stretch; display: flex; flex-direction: column; overflow: hidden; margin: 12px 2px 12px 0; color: #44341f; border: 4px solid #6e431f; outline: 2px solid #e0ad58; background: #d6bd82; box-shadow: inset 0 0 0 2px #f2dc9c, 7px 8px 0 rgba(54,36,20,.38); }
-.floor-roster > header { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; color: #fff2c5; border-bottom: 4px solid #70431f; background: #a95b2d; box-shadow: inset 0 -2px 0 #713b22; }
-.floor-roster > header span { display: block; color: #f1c986; font: 700 7px Consolas, monospace; letter-spacing: 1.5px; }
-.floor-roster > header h3 { margin: 3px 0 0; font-size: 14px; text-shadow: 2px 2px 0 #713b22; }
-.floor-roster > header > strong { min-width: 38px; height: 29px; display: grid; place-items: center; color: #3e321f; border: 2px solid #765021; background: #f1ca60; box-shadow: 2px 2px 0 #713b22; font: 900 10px Consolas, monospace; }
+/* 出勤名簿は右カラムのタブの中身。作業看板を畳んだので、各行が「いまの作業」も告げます。 */
+.floor-roster { color: #44341f; }
+.roster-idle { margin: 0; padding: 9px 11px; color: #f2dfae; border-bottom: 3px solid #6e431f; background: #6b4526; font-size: 10px; line-height: 1.5; }
 .floor-roster-list { min-height: 0; flex: 1; overflow: auto; padding: 7px; background-color: #b9975e; background-image: linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px); background-size: 13px 13px; }
-.floor-roster-row { width: 100%; min-height: 54px; display: grid; grid-template-columns: 22px 32px minmax(0, 1fr) 10px; align-items: center; gap: 6px; margin-bottom: 6px; padding: 5px 6px; color: #3f3426; border: 2px solid #917044; background: #fff0c3; box-shadow: inset 0 -3px 0 #dfc185, 3px 3px 0 rgba(79,53,28,.28); cursor: pointer; text-align: left; }
+.floor-roster-row { width: 100%; min-height: 58px; display: grid; grid-template-columns: 22px 32px minmax(0, 1fr) 10px; align-items: center; gap: 6px; margin-bottom: 6px; padding: 5px 6px; color: #3f3426; border: 2px solid #917044; background: #fff0c3; box-shadow: inset 0 -3px 0 #dfc185, 3px 3px 0 rgba(79,53,28,.28); cursor: pointer; text-align: left; }
+/* 承認・回答待ちは、名簿の上でもひと目で「こちらの番だ」と分かる赤にします。 */
+.floor-roster-row.attention { border-color: #8c3520; background: #f7d8b4; box-shadow: inset 0 -3px 0 #dfb488, 3px 3px 0 rgba(79,53,28,.28); }
+.floor-roster-row.attention .roster-line { color: #8a2f16; }
+.floor-roster-row.attention .roster-line::after { color: #c4472a; animation-duration: .6s; }
+.roster-who { display: flex; align-items: baseline; gap: 7px; }
+.roster-who small { flex: 0 0 auto; color: #8a6c3e; font-size: 8px; }
+.roster-line { overflow: hidden; color: #4a3418; font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.floor-roster-row.work .roster-line::after, .floor-roster-row.attention .roster-line::after {
+  content: '▊'; margin-left: 4px; color: #b4762c; font-size: 9px;
+  animation: worksign-blink 1s steps(2) infinite;
+}
+.floor-roster-row.lounge .roster-line, .floor-roster-row.left .roster-line { color: #7a6951; }
 .floor-roster-row:hover { border-color: #397a9a; background: #fff8dc; transform: translateY(-1px); }
 .floor-roster-row.selected { border-color: #246487; box-shadow: inset 5px 0 0 #397da4, inset 0 -3px 0 #c4b078, 3px 3px 0 rgba(79,53,28,.28); }
 .floor-roster-row .roster-number { color: #a66532; font: 900 9px Consolas, monospace; }
@@ -195,8 +205,8 @@ button { color: inherit; }
 .floor-roster > footer span::first-letter { color: #78b56c; }
 .floor-roster > footer strong { color: #f3ce6c; }
 
-.task-composer { min-height: 94px; display: grid; grid-template-columns: 128px minmax(0, 1fr) 88px; align-items: center; gap: 12px; padding: 12px 15px; background: #202b2e; }
-.composer-label { display: flex; flex-direction: column; gap: 5px; }
+.task-composer { min-height: 74px; display: grid; grid-template-columns: 112px minmax(0, 1fr) 88px; align-items: center; gap: 10px; padding: 9px 12px; background: #202b2e; }
+.composer-label { display: flex; flex-direction: column; gap: 3px; }
 .composer-label span { color: #f0bd55; font: 700 10px Consolas, monospace; letter-spacing: 1px; }
 .composer-label small { color: #89989c; font-size: 10px; }
 textarea { width: 100%; resize: none; padding: 10px 11px; color: #e8ede8; outline: none; border: 1px solid #45555a; border-radius: 0; background: #141d20; font-size: 12px; line-height: 1.55; }
@@ -210,8 +220,32 @@ textarea:disabled { color: #677376; background: #192124; }
 .danger-button { color: #ffe8e8; border: 1px solid #a54a50; background: #70383d; }
 .primary-button:disabled, .secondary-button:disabled, .danger-button:disabled { opacity: .38; cursor: default; box-shadow: none; }
 
-.sidebar { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(220px, 1.8fr) minmax(70px, .42fr); gap: 12px; }
-.sidebar > .panel { min-width: 0; }
+/*
+  右カラムは「タブ1枚ぶんの箱」。プロフィール・会議・ログを縦積みしていたのをやめ、
+  1枚ずつ出すことで、開発フロア図に高さと幅を返しています。
+*/
+.sidebar { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.sidebar [hidden] { display: none !important; }
+.side-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 3px solid #d39a38; background: #143143; }
+.side-tab {
+  min-width: 0; min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 0 4px; color: #8fa3ab; border: 0; border-right: 1px solid #0f2635;
+  background: #1a3648; cursor: pointer;
+}
+.side-tab:last-child { border-right: 0; }
+.side-tab span { overflow: hidden; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.side-tab b { min-width: 18px; padding: 1px 4px; color: #16303f; background: #6f8996; font: 700 9px Consolas, monospace; }
+.side-tab:hover { color: #d6e5ec; background: #22485f; }
+.side-tab.active { color: #fff3c9; background: #245575; box-shadow: inset 0 -3px 0 #f0bd55; }
+.side-tab.active b { color: #2b2517; background: #f0bd55; }
+/* 承認・回答待ちなど、こちらの手番があるタブは裏に隠れても分かるようにします。 */
+.side-tab.attention { color: #ffd7b0; background: #4a2b1e; }
+.side-tab.attention b { color: #46170d; background: #ef8b57; }
+.side-tab.attention:not(.active) { animation: side-tab-alert 1.1s steps(2) infinite; }
+@keyframes side-tab-alert { 50% { background: #6a3a25; } }
+.side-body { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.side-empty { padding: 22px 18px; }
+.side-empty p { margin: 0; color: #7f8f94; font-size: 11px; line-height: 1.7; }
 .agent-panel { min-height: 0; display: flex; flex-direction: column; }
 .agent-list { min-height: 0; overflow: auto; padding: 5px; }
 .agent-row { width: 100%; min-height: 46px; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid transparent; background: transparent; cursor: pointer; text-align: left; }
@@ -227,7 +261,7 @@ textarea:disabled { color: #677376; background: #192124; }
 .status-pill.running, .status-pill.done { color: #9dddac; border-color: #477a53; background: #243d2a; }
 .status-pill.error { color: #ff9da4; border-color: #8f3c44; background: #47262a; }
 
-.detail-panel { padding: 14px; }
+.detail-panel { overflow: auto; padding: 14px; }
 .detail-title { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
 .detail-panel dl { margin: 0 0 11px; border-top: 1px solid #334145; }
 .detail-panel dl div { display: grid; grid-template-columns: 76px 1fr; gap: 8px; padding: 7px 0; border-bottom: 1px solid #303b3f; }
@@ -237,7 +271,6 @@ textarea:disabled { color: #677376; background: #192124; }
 .detail-actions { display: grid; grid-template-columns: 1fr 70px; gap: 8px; margin-top: 8px; }
 
 .conversation-panel { min-height: 0; display: flex; flex-direction: column; }
-.conversation-count { min-width: 25px; padding: 4px 6px; color: #95a4a8; border: 1px solid #45555a; font: 9px Consolas, monospace; text-align: center; }
 .conversation-list { min-height: 160px; flex: 1; overflow: auto; padding: 11px 12px; background: #172124; }
 .conversation-empty { margin: 18px 8px; color: #708084; font-size: 10px; text-align: center; }
 .conversation-message { margin: 0 0 9px; padding: 9px 10px; border-left: 3px solid #4c889e; background: #223035; }
@@ -388,73 +421,70 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .chalk-tray i:nth-child(3) { background: #a8cddd; transform: rotate(-1deg); }
 .chalk-tray span { margin-left: auto; color: #d6b785; font: 8px Consolas, monospace; letter-spacing: 1.5px; }
 
-/* ---- 発生経費メーター（トークン課金の可視化） ---- */
-.payroll-bar {
+/* ---- ステータスHUD（経費・HP・進行表を1本にまとめた帯） ----
+   3本の帯を積むとフロア図の高さを食うので、ここは一目で分かる要点だけ。
+   数字の内訳は「明細」ウィンドウ、工程の詳細は「進行表」ウィンドウに任せます。 */
+.hud-bar {
+  min-height: 46px;
   display: grid;
-  grid-template-columns: 54px minmax(190px, auto) minmax(92px, .5fr) auto minmax(300px, 1fr) auto;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 20px;
-  color: #ffeeb6;
+  grid-template-columns: minmax(215px, auto) minmax(230px, auto) minmax(240px, 1fr);
+  align-items: stretch;
+  gap: 10px;
+  padding: 5px 16px;
   border-bottom: 4px solid #b3801f;
-  background: repeating-linear-gradient(135deg, #2b1d3f 0 14px, #33234a 14px 28px);
+  background: repeating-linear-gradient(135deg, #24203a 0 14px, #2a2543 14px 28px);
   box-shadow: inset 0 -3px 0 rgba(0,0,0,.34), 0 4px 0 rgba(6,4,12,.5);
+  font-family: var(--retro-font);
   z-index: 1;
 }
-.payroll-coin {
-  width: 42px; height: 42px; display: grid; place-items: center;
-  color: #6a4a06; border: 3px solid #7a5a12;
+.hud-cell {
+  min-width: 0; display: flex; align-items: center; gap: 9px;
+  padding: 3px 10px; color: #ffeeb6; text-align: left;
+  border: 2px solid #191233; background: rgba(15, 10, 30, .5);
+  box-shadow: inset 0 0 0 1px rgba(120,96,175,.35);
+}
+button.hud-cell { cursor: pointer; }
+button.hud-cell:hover { border-color: #f0bd55; background: rgba(38, 26, 66, .78); }
+.hud-coin {
+  width: 26px; height: 26px; flex: 0 0 auto; display: grid; place-items: center;
+  color: #6a4a06; border: 2px solid #7a5a12; border-radius: 50%;
   background: radial-gradient(circle at 34% 30%, #ffe89a, #f0bd55 62%, #c98f28);
-  border-radius: 50%;
-  font: 900 20px/1 var(--retro-font);
-  box-shadow: 0 0 0 3px #241833, 3px 3px 0 rgba(0,0,0,.4);
+  font: 900 13px/1 var(--retro-font);
+  box-shadow: 0 0 0 2px #241833;
   animation: coin-pop .55s steps(6);
 }
-.payroll-readout { display: flex; flex-direction: column; gap: 3px; }
-.payroll-caption { color: #c4a7ef; font-size: 10px; letter-spacing: 2px; }
-.payroll-amount { display: flex; align-items: baseline; gap: 3px; line-height: 1; }
-.payroll-amount i { color: #ffd977; font-size: 17px; font-style: normal; }
-.payroll-digits {
-  color: #fff2a8; font-size: 32px; font-weight: 400; letter-spacing: 1px;
-  text-shadow: 3px 3px 0 #6c2d8f, 0 0 12px rgba(255,214,110,.45);
-  font-variant-numeric: tabular-nums;
+.hud-payroll-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.hud-yen { display: flex; align-items: baseline; gap: 2px; line-height: 1; }
+.hud-yen i { color: #ffd977; font-size: 11px; font-style: normal; }
+.hud-digits {
+  color: #fff2a8; font-size: 20px; font-weight: 400; letter-spacing: 1px;
+  text-shadow: 2px 2px 0 #6c2d8f; font-variant-numeric: tabular-nums;
 }
-.payroll-amount em { color: #f6c96c; font-size: 15px; font-style: normal; }
-.payroll-amount b { margin-left: 4px; color: #ffdf95; font-size: 15px; font-weight: 400; }
-.payroll-gauge { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.payroll-gauge-track { height: 14px; overflow: hidden; border: 2px solid #150e24; background: #1b1230; box-shadow: inset 0 0 0 1px #4b3670; }
-.payroll-gauge-fill {
-  height: 100%;
-  background: repeating-linear-gradient(90deg, #7ee0b0 0 6px, #5cc394 6px 12px);
-  box-shadow: 0 0 8px rgba(126,224,176,.6);
-  transition: width .5s ease-out;
-}
-.payroll-gauge small { color: #b39ddb; font-size: 9px; }
-.payroll-gauge small span { color: #8d78bb; }
-.payroll-tokens { display: flex; gap: 16px; margin: 0; }
-.payroll-tokens div { display: flex; flex-direction: column; gap: 3px; text-align: right; }
-.payroll-tokens dt { color: #a48fd0; font-size: 9px; }
-.payroll-tokens dd { margin: 0; color: #ffe9a8; font-size: 14px; }
-.payroll-tokens .usage-live { display: flex; align-items: center; justify-content: flex-end; gap: 5px; color: #75d8a1; font: 700 10px Consolas, monospace; letter-spacing: .5px; }
-.usage-live i { width: 7px; height: 7px; display: inline-block; border-radius: 50%; background: #70ca8a; box-shadow: 0 0 0 2px #284c34, 0 0 8px rgba(112,202,138,.7); animation: usage-pulse 1.4s ease-in-out infinite; }
-.usage-live.waiting { color: #9c8abf; }
-.usage-live.waiting i { background: #77678f; box-shadow: 0 0 0 2px #342849; animation: none; }
+.hud-yen em { color: #f6c96c; font-size: 11px; font-style: normal; }
+/* つぎの目盛りまでの残り。数字は明細に譲り、ここはバーの伸びだけを見せます。 */
+.hud-gauge { height: 6px; overflow: hidden; border: 1px solid #150e24; background: #1b1230; }
+.hud-gauge i { display: block; height: 100%; background: repeating-linear-gradient(90deg, #7ee0b0 0 5px, #5cc394 5px 10px); transition: width .5s ease-out; }
+.hud-live { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; color: #75d8a1; font: 700 8px Consolas, monospace; letter-spacing: .5px; }
+.hud-live i { width: 6px; height: 6px; border-radius: 50%; background: #70ca8a; box-shadow: 0 0 0 2px #284c34; animation: usage-pulse 1.4s ease-in-out infinite; }
+.hud-live.waiting { color: #9c8abf; }
+.hud-live.waiting i { background: #77678f; box-shadow: 0 0 0 2px #342849; animation: none; }
 @keyframes usage-pulse { 50% { opacity: .45; transform: scale(.82); } }
-.payroll-open {
-  height: 36px; padding: 0 14px; color: #2a1740;
-  border: 3px solid #1c1030; background: #ffd166;
-  box-shadow: 3px 3px 0 rgba(6,4,12,.55); cursor: pointer;
-  font: 11px var(--retro-font);
-}
-.payroll-open:hover { background: #ffe293; transform: translateY(-1px); }
-.payroll-actions { display: flex; flex-direction: column; gap: 5px; }
-/* メーターの締め直し。会計報告は消えないので、押し間違えても取り返しはつきます。 */
-.payroll-clear {
-  height: 24px; padding: 0 10px; color: #ffdede;
-  border: 2px solid #7c3a44; background: #4d2530; cursor: pointer;
-  font: 9px var(--retro-font); white-space: nowrap;
-}
-.payroll-clear:hover { background: #6c3441; }
+
+.hud-hp-label { flex: 0 0 auto; color: #9ef0bb; font: 400 15px/1 var(--retro-font); letter-spacing: 1px; text-shadow: 2px 2px 0 #14402a; }
+.hud-hp .hp-bar { flex: 1; min-width: 60px; }
+.hud-hp-value { flex: 0 0 auto; display: flex; align-items: baseline; gap: 1px; color: #b6ffcf; font: 400 17px/1 var(--retro-font); text-shadow: 2px 2px 0 #16321f; font-variant-numeric: tabular-nums; }
+.hud-hp-value em { color: #8fd8a8; font-size: 9px; font-style: normal; }
+.hud-hp.low .hud-hp-value { color: #ffe9a8; text-shadow: 2px 2px 0 #4a3512; }
+.hud-hp.low .hud-hp-value em { color: #e2bd66; }
+.hud-hp.critical .hud-hp-value { color: #ffb8be; text-shadow: 2px 2px 0 #4a1c22; }
+.hud-hp.critical .hud-hp-value em { color: #e0616c; }
+.hud-hp.unknown .hud-hp-value { color: #7f6ea6; text-shadow: none; }
+.hud-hp-sub { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
+.hud-hp-sub small { color: #a48fd0; font-size: 8px; white-space: nowrap; }
+
+/* いま全体が何を待っているのか。工程そのものは右の縦長の進行表が受け持ちます。 */
+.hud-status { min-width: 0; }
+.hud-status .roadmap-waiting { min-width: 0; overflow: hidden; color: #cbd8e0; font-family: "Yu Gothic UI", Meiryo, sans-serif; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
 .payroll-backdrop { position: fixed; inset: 0; z-index: 19; display: grid; place-items: center; padding: 28px; background: rgba(12, 6, 22, .84); }
 .payroll-window { width: min(1060px, calc(100vw - 56px)); height: min(740px, calc(100vh - 56px)); display: flex; flex-direction: column; overflow: hidden; color: #eadfff; border: 6px solid #3d2a5e; outline: 3px solid #f0bd55; background: #241a38; box-shadow: inset 0 0 0 2px #5b428b, 12px 14px 0 rgba(0,0,0,.55); }
@@ -573,26 +603,7 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .model-note { margin: -4px 0 10px; color: #8ba4af; font-size: 10px; line-height: 1.6; }
 .model-note strong { color: #f0bd55; }
 
-/* ---- 進行表（常時表示のロードマップ） ---- */
-.roadmap-bar {
-  display: grid;
-  grid-template-columns: 92px minmax(210px, .72fr) minmax(330px, 1.45fr) auto auto;
-  align-items: center;
-  gap: 14px;
-  padding: 7px 20px;
-  color: #e8f2e2;
-  border-bottom: 4px solid #6b4a24;
-  background: repeating-linear-gradient(135deg, #1c3a30 0 14px, #214337 14px 28px);
-  box-shadow: inset 0 -3px 0 rgba(0,0,0,.3), 0 3px 0 rgba(5,12,9,.45);
-  font-family: var(--retro-font);
-  z-index: 1;
-}
-.roadmap-plate { display: flex; flex-direction: column; gap: 3px; padding: 5px 8px; border: 2px solid #f0e0a8; background: #2c5a49; }
-.roadmap-plate span { color: #a9c7ae; font: 700 7px Consolas, monospace; letter-spacing: 1.6px; }
-.roadmap-plate strong { color: #fff6d5; font-size: 13px; font-weight: 400; }
-.roadmap-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.roadmap-copy strong { overflow: hidden; color: #fff6d5; font-size: 12px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.roadmap-copy small { overflow: hidden; color: #9fbfa8; font-family: "Yu Gothic UI", Meiryo, sans-serif; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+/* ---- 進行表（HUDのマイルストーンと、詳細ウィンドウの共通パーツ） ---- */
 .roadmap-waiting { display: flex; align-items: center; gap: 6px; }
 .roadmap-waiting i, .roadmap-current-state > i { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #789083; box-shadow: 0 0 0 3px rgba(120,144,131,.18); }
 .roadmap-waiting.working i, .roadmap-current-state.working > i { background: #f0bd55; box-shadow: 0 0 0 3px rgba(240,189,85,.18), 0 0 9px rgba(240,189,85,.5); animation: roadmap-pulse 1.4s ease-in-out infinite; }
@@ -616,91 +627,48 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .roadmap-milestone.done small { color: #a9d9b6; }
 .roadmap-milestone.current:not(.active) small { color: #d3e6d8; font-weight: 700; }
 .roadmap-milestones.empty { opacity: .5; }
-.roadmap-gauge { display: flex; align-items: center; gap: 9px; }
-.roadmap-gauge-track { flex: 1; height: 14px; overflow: hidden; border: 2px solid #10241d; background: #14312a; box-shadow: inset 0 0 0 1px #3d6d5a; }
-.roadmap-gauge-fill { height: 100%; background: repeating-linear-gradient(90deg, #f3d778 0 6px, #d9b455 6px 12px); transition: width .5s ease-out; }
-.roadmap-gauge b { min-width: 44px; color: #ffe9a8; font-size: 15px; font-weight: 400; text-align: right; font-variant-numeric: tabular-nums; }
-.roadmap-meta { display: flex; flex-direction: column; gap: 3px; color: #9fbfa8; font-family: "Yu Gothic UI", Meiryo, sans-serif; font-size: 9px; text-align: right; }
-.roadmap-open { height: 32px; padding: 0 12px; color: #1e3329; border: 3px solid #12261f; background: #8fd0a6; box-shadow: 3px 3px 0 rgba(5,12,9,.5); cursor: pointer; font: 10px var(--retro-font); }
+
+/* ---- 縦に流れる進行表（フロア図の右に立てる柱） ----
+   ①内容 → 長いつなぎ線 → ②内容、と上から下へ読ませます。工程名は折り返して
+   全文を出すので、横並びのときのように途中で切れません。 */
+.roadmap-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.roadmap-column .panel-heading { background: #234539; border-bottom-color: #d9b455; box-shadow: inset 0 -2px 0 #16332a; }
+.roadmap-column-count { min-width: 40px; padding: 3px 6px; color: #ffe9a8; border: 2px solid #3f6b58; background: #1b3a30; font: 700 10px Consolas, monospace; text-align: center; }
+.roadmap-column-title {
+  margin: 0; padding: 8px 11px; color: #fff6d5;
+  border-bottom: 2px solid #2c4c40; background: #1d3c32;
+  font: 11px/1.5 var(--retro-font);
+}
+.roadmap-column-body { min-height: 0; flex: 1; overflow: auto; padding: 12px 10px; background: #16302a; scrollbar-width: thin; }
+.roadmap-milestones.vertical { display: flex; flex-direction: column; overflow: visible; padding: 0; }
+.roadmap-milestones.vertical .roadmap-milestone {
+  min-width: 0; flex: 0 0 auto;
+  display: grid; grid-template-columns: 26px minmax(0, 1fr);
+  align-items: start; gap: 0 10px;
+  padding-bottom: 30px; /* ここがそのまま工程と工程のあいだの縦線の長さになります */
+  text-align: left;
+}
+.roadmap-milestones.vertical .roadmap-milestone:last-child { padding-bottom: 0; }
+/* 縦線は丸の真下から次の丸まで。進んだぶんだけ上から塗ります。 */
+.roadmap-milestones.vertical .roadmap-link {
+  top: 26px; left: 11px; width: 4px; height: calc(100% - 26px);
+  box-shadow: 1px 0 0 #10241d;
+}
+.roadmap-milestones.vertical .roadmap-link b { width: 100%; height: 0; transition: height .45s ease-out; }
+.roadmap-milestones.vertical .roadmap-link.active b { background: repeating-linear-gradient(180deg, #f3d778 0 5px, #d9b455 5px 10px); }
+.roadmap-milestones.vertical .roadmap-milestone small {
+  padding-top: 3px; overflow: visible;
+  font-size: 10px; line-height: 1.45; white-space: normal;
+  overflow-wrap: anywhere;
+}
+.roadmap-column-foot { display: flex; flex-direction: column; gap: 5px; padding: 9px 10px; border-top: 3px solid #3f6b58; background: #1d3c32; color: #9fbfa8; font-size: 9px; }
+.roadmap-column-foot > small { color: #bcd8c4; font-size: 9px; line-height: 1.4; }
+.roadmap-column-foot > small i { width: 7px; height: 7px; }
+.roadmap-open { height: 30px; margin-top: 2px; padding: 0 8px; color: #1e3329; border: 3px solid #12261f; background: #8fd0a6; box-shadow: 3px 3px 0 rgba(5,12,9,.5); cursor: pointer; font: 9px var(--retro-font); }
 .roadmap-open:hover { background: #a9e0bd; transform: translateY(-1px); }
 
-/* 作業看板：いま誰が何をしているかを、フロアの真上に大きく掲げる木の立て看板。 */
-.worksign-bar {
-  min-height: 84px;
-  display: grid;
-  grid-template-columns: 106px minmax(0, 1fr) auto;
-  align-items: stretch;
-  gap: 14px;
-  padding: 9px 20px;
-  color: #f6ecd3;
-  border-bottom: 4px solid #7c4f20;
-  background: repeating-linear-gradient(135deg, #33261a 0 14px, #3b2d1f 14px 28px);
-  box-shadow: inset 0 -3px 0 rgba(0,0,0,.34), 0 3px 0 rgba(12,7,3,.5);
-  font-family: var(--retro-font);
-  z-index: 1;
-}
-.worksign-plate {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  padding: 4px 6px;
-  border: 3px solid #f0d79a; background: #7a4a22;
-  box-shadow: inset 0 0 0 2px #94612c, 3px 3px 0 rgba(12,7,3,.5);
-}
-.worksign-plate span { color: #f3ca8a; font: 700 7px Consolas, monospace; letter-spacing: 1.4px; }
-.worksign-plate strong { color: #fff6d5; font-size: 15px; font-weight: 400; }
-.worksign-plate b {
-  min-width: 30px; padding: 1px 6px; color: #3b2b13; background: #f0bd55;
-  box-shadow: 2px 2px 0 rgba(12,7,3,.45);
-  font: 900 13px Consolas, monospace; text-align: center;
-}
-.worksign-cards { min-width: 0; display: flex; align-items: stretch; gap: 10px; }
-.worksign-card {
-  min-width: 0; flex: 1 1 0; display: grid; grid-template-columns: 32px minmax(0, 1fr);
-  align-items: center; gap: 10px;
-  padding: 7px 12px 7px 9px;
-  color: #33291a; text-align: left; cursor: pointer;
-  border: 3px solid #6d4520; background: #f3e3ba;
-  box-shadow: inset 0 -4px 0 #d9c393, 4px 4px 0 rgba(12,7,3,.42);
-}
-.worksign-card:hover { background: #fdf3d2; transform: translateY(-1px); }
-.worksign-card img { display: block; width: 32px; height: 40px; image-rendering: pixelated; }
-.worksign-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.worksign-who { display: flex; align-items: baseline; gap: 8px; }
-.worksign-who b { overflow: hidden; color: #4a3418; font-size: 12px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.worksign-who small { flex: 0 0 auto; color: #8a6c3e; font: 9px "Yu Gothic UI", Meiryo, sans-serif; }
-.worksign-headline {
-  overflow: hidden;
-  color: #2b2114; font-size: 19px; font-weight: 400; line-height: 1.15;
-  text-shadow: 1px 1px 0 rgba(255,255,255,.5);
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.worksign-headline::after {
-  content: '▊'; margin-left: 5px; color: #b4762c; font-size: 13px;
-  animation: worksign-blink 1s steps(2) infinite;
-}
+/* 作業看板は出勤名簿へ畳みました。点滅カーソルだけ名簿の行が受け継いでいます。 */
 @keyframes worksign-blink { 50% { opacity: 0; } }
-/* 承認・回答待ちは、ひと目で「こちらの番だ」と分かる赤い看板にします。 */
-.worksign-card.attention { border-color: #8c3520; background: #f7d8b4; box-shadow: inset 0 -4px 0 #dfb488, 4px 4px 0 rgba(12,7,3,.42); }
-.worksign-card.attention .worksign-headline { color: #8a2f16; }
-.worksign-card.attention .worksign-headline::after { color: #c4472a; animation-duration: .6s; }
-.worksign-empty {
-  flex: 1; margin: 0; display: flex; align-items: center; padding: 0 14px;
-  color: #b09a70; border: 3px dashed #6d5936; background: rgba(0,0,0,.16);
-  font-size: 12px;
-}
-.worksign-more {
-  flex: 0 0 auto; display: grid; place-items: center; padding: 0 10px;
-  color: #f0d79a; border: 3px solid #6d4520; background: #4c3620;
-  font-size: 11px;
-}
-.worksign-away {
-  display: flex; flex-direction: column; justify-content: center; gap: 5px;
-  padding-left: 14px; border-left: 3px solid #56391c;
-}
-.worksign-away span { display: flex; align-items: center; gap: 6px; color: #c9b189; font-size: 10px; }
-.worksign-away i { width: 9px; height: 9px; border: 2px solid #241708; }
-.worksign-away .rest i { background: #f0bd55; }
-.worksign-away .left i { background: #6b7a80; }
-.worksign-away b { min-width: 18px; color: #fff2c5; font: 900 12px Consolas, monospace; text-align: right; }
 
 .roadmap-backdrop { position: fixed; inset: 0; z-index: 19; display: grid; place-items: center; padding: 28px; background: rgba(6, 16, 12, .82); }
 .roadmap-window { width: min(900px, calc(100vw - 56px)); height: min(700px, calc(100vh - 56px)); display: flex; flex-direction: column; overflow: hidden; color: #e9f2e6; border: 6px solid #4b3524; outline: 3px solid #d9b455; background: #1c3a30; box-shadow: inset 0 0 0 2px #3f6b58, 12px 14px 0 rgba(0,0,0,.55); }
@@ -901,71 +869,33 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .attachment-chip > button:hover { color: #ffe3e3; background: #8a3f45; }
 .attachment-error { width: 100%; margin: 0; color: #ff9da4; font-size: 10px; }
 
-/* ── HP（AI使用残量）。ゲームのHPゲージとして大きく見せます ─────────── */
-.hp-meter {
-  min-width: 300px;
-  display: grid;
-  grid-template-columns: 54px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
-  border: 3px solid #1b1030;
-  background: #1d1433;
-  box-shadow: inset 0 0 0 2px #4b3576, 3px 3px 0 rgba(6,4,12,.5);
-}
-.hp-plate { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.hp-plate span {
-  color: #9ef0bb; font: 400 24px/1 var(--retro-font);
-  letter-spacing: 2px; text-shadow: 2px 2px 0 #14402a;
-}
-.hp-plate small { color: #a48fd0; font-size: 8px; letter-spacing: 1px; white-space: nowrap; }
-.hp-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.hp-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+/* ── HP（AI使用残量）のゲージ本体。HUDのHPセルが使います ─────────── */
 .hp-bar {
-  position: relative; height: 22px; overflow: hidden;
-  border: 3px solid #120c22; background: #241a3c;
+  position: relative; height: 16px; overflow: hidden;
+  border: 2px solid #120c22; background: #241a3c;
   box-shadow: inset 0 2px 0 rgba(0,0,0,.45);
 }
 .hp-bar > i {
   display: block; height: 100%;
-  background: linear-gradient(180deg, #a7f0be 0 6px, #57c47e 6px 100%);
+  background: linear-gradient(180deg, #a7f0be 0 5px, #57c47e 5px 100%);
   transition: width .5s ease;
 }
-.hp-meter.low .hp-bar > i { background: linear-gradient(180deg, #ffe6a5 0 6px, #f0bd55 6px 100%); }
-.hp-meter.critical .hp-bar > i {
-  background: linear-gradient(180deg, #ffc0c5 0 6px, #e0616c 6px 100%);
+.hud-hp.low .hp-bar > i { background: linear-gradient(180deg, #ffe6a5 0 5px, #f0bd55 5px 100%); }
+.hud-hp.critical .hp-bar > i {
+  background: linear-gradient(180deg, #ffc0c5 0 5px, #e0616c 5px 100%);
   animation: hp-alert .9s steps(2) infinite;
 }
-.hp-meter.unknown .hp-bar > i { background: #3c2f5c; }
+.hud-hp.unknown .hp-bar > i { background: #3c2f5c; }
 /* ドット目盛り。中身のバーの上に重ねて、レトロゲームらしい刻みを出します。 */
 .hp-notches {
   position: absolute; inset: 0; pointer-events: none;
   background: repeating-linear-gradient(90deg, transparent 0 9px, rgba(10,6,20,.55) 9px 11px);
 }
-.hp-value {
-  display: flex; align-items: baseline; gap: 2px;
-  color: #b6ffcf; font: 400 30px/1 var(--retro-font);
-  text-shadow: 3px 3px 0 #16321f; font-variant-numeric: tabular-nums;
-}
-.hp-value em { color: #8fd8a8; font-size: 13px; font-style: normal; }
-.hp-meter.low .hp-value { color: #ffe9a8; text-shadow: 3px 3px 0 #4a3512; }
-.hp-meter.low .hp-value em { color: #e2bd66; }
-.hp-meter.critical .hp-value { color: #ffb8be; text-shadow: 3px 3px 0 #4a1c22; }
-.hp-meter.critical .hp-value em { color: #e0616c; }
-.hp-meter.unknown .hp-value { color: #7f6ea6; text-shadow: none; }
-.hp-notes { display: flex; align-items: center; gap: 8px; }
-.hp-window { color: #c4a7ef; font-size: 10px; white-space: nowrap; }
-.hp-reset { color: #9c8abf; font: 9px Consolas, monospace; white-space: nowrap; }
 /* 長期の枠は、HPバーの脇に細いサブゲージとして添えます。 */
-.hp-sub { min-width: 118px; margin-left: auto; display: flex; align-items: center; gap: 5px; }
-.hp-sub small { color: #a48fd0; font-size: 9px; white-space: nowrap; }
-.hp-sub-bar { width: 46px; height: 8px; border: 2px solid #120c22; background: #241a3c; }
+.hp-sub-bar { width: 38px; height: 7px; border: 2px solid #120c22; background: #241a3c; }
 .hp-sub-bar i { display: block; height: 100%; background: #7fd8a3; transition: width .5s ease; }
 .hp-sub-bar i.low { background: #f0bd55; }
 .hp-sub-bar i.critical { background: #e0616c; }
-.hp-sub b { color: #cfeeda; font: 700 10px Consolas, monospace; text-align: right; }
-.hp-sub b.low { color: #ffd166; }
-.hp-sub b.critical { color: #ff8b93; }
 @keyframes hp-alert { 50% { filter: brightness(1.45); } }
 
 .usage-limit-track { height: 9px; border: 2px solid #1a1030; background: #1d1433; }
@@ -987,22 +917,102 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .status-dot.accounting { background: #b58bd4; }
 .status-pill.accounting { color: #d9c1f0; border-color: #6b4f86; background: #332a44; }
 
+/* スキルブック。魔導書のつもりで、社員名簿より少し暗い色にしています。 */
+.skill-button { height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 11px; color: #e7ddff; border: 3px solid #3b2a63; outline: 1px solid #9d84d8; background: #56409a; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2), 3px 3px 0 #0a1b28; cursor: pointer; }
+.skill-button:hover { background: #6b52b8; transform: translateY(-1px); }
+.skill-button span { font-size: 11px; font-weight: 700; white-space: nowrap; }
+.skill-button strong { min-width: 24px; height: 24px; display: grid; place-items: center; color: #241a3c; background: #cbb2ff; font: 700 11px Consolas, monospace; }
+.skill-button.has-results strong { background: #f0bd55; }
+
+.skill-backdrop { position: fixed; inset: 0; z-index: 18; display: grid; place-items: center; padding: 28px; background: rgba(5, 14, 21, .82); }
+.skill-window { width: min(1180px, calc(100vw - 56px)); height: min(780px, calc(100vh - 56px)); display: flex; flex-direction: column; overflow: hidden; border: 6px solid #3b2a63; outline: 3px solid #9d84d8; background: #cfc3e6; box-shadow: inset 0 0 0 2px #eae2ff, 12px 14px 0 rgba(0,0,0,.5); }
+.skill-window .game-window-titlebar { border-bottom-color: #9d84d8; background: #3a2a66; }
+.skill-window .game-window-titlebar .title-icon { border-color: #2a1d4b; background: #cbb2ff; box-shadow: 3px 3px 0 #211640; }
+.skill-window .game-window-titlebar span { color: #c8b8ec; }
+.skill-window .game-window-titlebar h2 { text-shadow: 2px 2px 0 #211640; }
+
+.skill-stats { min-height: 54px; display: flex; align-items: center; gap: 22px; padding: 8px 15px; color: #33294c; border-bottom: 3px solid #6d5aa0; background: #e6dcf7; font-size: 11px; }
+.skill-stats span { white-space: nowrap; }
+.skill-stats b { margin-right: 4px; color: #6a3fa8; font: 900 18px Consolas, monospace; }
+.skill-tabs { margin-left: auto; display: flex; gap: 6px; }
+.skill-tabs button { height: 34px; padding: 0 13px; color: #efe7ff; border: 3px solid #2f2352; background: #5c4795; box-shadow: 3px 3px 0 #a091c7; cursor: pointer; font-weight: 800; font-size: 11px; }
+.skill-tabs button:hover { background: #715ab0; }
+.skill-tabs button.selected { color: #2b2140; border-color: #6c4f1f; background: #f0bd55; }
+
+.skill-banner { margin: 0; padding: 8px 15px; color: #2f2450; border-bottom: 3px solid #6d5aa0; background: #f4ecff; font-size: 11px; }
+.skill-banner.error { color: #fff0ec; background: #a8452f; }
+
+.skill-content { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 12px; padding: 12px; background-color: #9d8cc4; background-image: linear-gradient(rgba(255,255,255,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.07) 1px, transparent 1px); background-size: 16px 16px; }
+.skill-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 4px solid #4b3a7c; background: #f2edfb; box-shadow: inset 0 0 0 2px #cfc0ee; }
+.skill-column .game-section-title { border-bottom-color: #3b2a63; background: #56409a; }
+.skill-column .game-section-title span { color: #2b2140; background: #cbb2ff; }
+.skill-column.wide .game-section-title { background: #3f6f8f; border-bottom-color: #24485f; }
+.skill-column.wide .game-section-title span { color: #22323d; background: #9fd6f0; }
+
+.skill-note { margin: 9px 9px 0; padding: 8px 9px; color: #4a3f66; border: 2px dashed #9a89c4; background: #fbf8ff; font-size: 10px; line-height: 1.5; }
+.skill-empty { margin: 26px 12px; color: #6a5f85; font-size: 11px; line-height: 1.6; text-align: center; }
+
+.skill-scope-switch { display: flex; flex-wrap: wrap; gap: 6px; padding: 9px 9px 0; }
+.skill-scope-switch button { height: 30px; padding: 0 10px; color: #3b3355; border: 2px solid #7d6cae; background: #e2d9f5; cursor: pointer; font-size: 10px; font-weight: 700; }
+.skill-scope-switch button:hover:not(:disabled) { background: #efe8ff; }
+.skill-scope-switch button.selected { color: #fdf7ff; border-color: #2f2352; background: #5c4795; }
+.skill-scope-switch button:disabled { opacity: .45; cursor: default; }
+.skill-scope-switch .skill-new-button { margin-left: auto; color: #fff6d5; border-color: #6c4f1f; background: #d09330; }
+.skill-scope-switch .skill-new-button:hover { background: #e8a83c; }
+
+.skill-card-list { min-height: 0; overflow: auto; padding: 9px; }
+.skill-card { --skill-color: #94a0a0; min-width: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-bottom: 8px; padding: 10px; color: #3a3352; border: 3px solid #9d8cc4; border-left: 6px solid var(--skill-color); background: #fdfaff; box-shadow: inset 0 -3px 0 #e4dbf5, 3px 3px 0 rgba(60,45,100,.25); }
+.skill-card.equipped { border-color: #6c4f1f; border-left-color: var(--skill-color); background: #fff6e0; }
+.skill-mark { width: 34px; height: 34px; display: grid; place-items: center; color: #23202f; background: var(--skill-color); box-shadow: inset 0 0 0 2px rgba(255,255,255,.45); font-size: 17px; }
+.skill-card-copy { min-width: 0; }
+.skill-card-copy header { display: flex; align-items: center; gap: 7px; }
+.skill-card-copy header strong { overflow: hidden; color: #2b2740; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.skill-category { padding: 3px 5px; color: #241f33; background: var(--skill-color); font-size: 8px; font-weight: 800; white-space: nowrap; }
+.skill-card-copy p { margin: 4px 0; font-size: 10px; line-height: 1.45; }
+.skill-card-copy small { display: block; color: #7a6f95; font-size: 9px; }
+.skill-card-actions { display: flex; flex-direction: column; gap: 5px; }
+.skill-card-actions button { min-width: 92px; height: 27px; padding: 0 7px; color: #f3eeff; border: 2px solid #43356e; background: #6f5fa0; cursor: pointer; font-size: 9px; font-weight: 700; }
+.skill-card-actions button:hover:not(:disabled) { background: #8574bb; }
+.skill-card-actions button:disabled { opacity: .45; cursor: default; }
+.skill-card-actions .equip-button { color: #fff6d5; border-color: #6c4f1f; background: #d09330; }
+.skill-card-actions .equip-button:hover:not(:disabled) { background: #e8a83c; }
+
+.skill-shelf { margin: 9px 9px 0; border: 3px solid #7d6cae; background: #efe9fb; }
+.skill-shelf header { display: flex; align-items: center; gap: 8px; padding: 7px 10px; color: #fdf7ff; background: #5c4795; }
+.skill-shelf header strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.skill-shelf header small { margin-left: auto; font: 700 10px Consolas, monospace; }
+
+.skill-form { margin: 9px 9px 0; padding: 10px; color: #392f56; border: 3px solid #5c4795; background: #fbf8ff; box-shadow: inset 0 0 0 2px #ddd2f4; }
+.skill-form .form-banner { margin: -10px -10px 10px; padding: 7px 9px; color: #f6f0ff; background: #5c4795; font-size: 10px; font-weight: 700; }
+.skill-form label { display: grid; gap: 5px; margin-bottom: 8px; font-size: 10px; font-weight: 700; }
+.skill-form input, .skill-form textarea, .skill-form select { min-width: 0; width: 100%; padding: 7px 8px; color: #24333a; outline: 0; border: 2px solid #8d7cbc; background: #fffdff; font-size: 10px; font-family: inherit; }
+.skill-form textarea { resize: vertical; line-height: 1.55; }
+.skill-form input:focus, .skill-form textarea:focus, .skill-form select:focus { border-color: #d09330; box-shadow: inset 3px 0 0 #d09330; }
+.skill-ai-assist { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; margin-bottom: 10px; padding: 9px; border: 2px dashed #b09ad8; background: #f3edff; }
+.skill-ai-assist label { margin: 0; }
+.skill-ai-assist button { height: 31px; padding: 0 12px; color: #fff6d5; border: 3px solid #6c4f1f; background: #d09330; box-shadow: 2px 2px 0 #a091c7; cursor: pointer; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.skill-ai-assist button:hover:not(:disabled) { background: #e8a83c; }
+.skill-ai-assist button:disabled { opacity: .5; cursor: default; }
+.skill-form .game-primary-button { border-color: #2f2352; background: #5c4795; box-shadow: 3px 3px 0 #a091c7; }
+.skill-form .game-primary-button:hover:not(:disabled) { background: #715ab0; }
+.skill-form .game-primary-button:disabled { opacity: .5; cursor: default; }
+
 @keyframes blink { 50% { opacity: .25; } }
 
+/* 背の低い画面ほどフロア図が苦しいので、HUDと入力欄をさらに詰めます。 */
 @media (max-height: 760px) {
   .topbar { min-height: 66px; }
-  .payroll-bar { padding: 5px 20px; }
-  .payroll-coin { width: 34px; height: 34px; font-size: 16px; }
-  .payroll-digits { font-size: 25px; }
-  .hp-meter { padding: 4px 8px; }
-  .hp-plate span { font-size: 19px; }
-  .hp-bar { height: 17px; }
-  .hp-value { font-size: 24px; }
-  .roadmap-bar { padding: 4px 20px; gap: 12px; }
-  .roadmap-plate strong { font-size: 11px; }
-  .roadmap-gauge b { font-size: 13px; }
-  .dashboard { padding-top: 10px; gap: 10px; }
-  .task-composer { min-height: 80px; }
+  .hud-bar { min-height: 40px; padding: 3px 12px; }
+  .hud-coin { width: 22px; height: 22px; font-size: 11px; }
+  .hud-digits { font-size: 17px; }
+  .hp-bar { height: 13px; }
+  .hud-hp-value { font-size: 15px; }
+  .roadmap-milestones.vertical .roadmap-milestone { padding-bottom: 20px; }
+  .roadmap-column-title { padding: 6px 10px; }
+  .dashboard { padding-top: 9px; gap: 10px; }
+  .panel-heading { min-height: 40px; }
+  .task-composer { min-height: 66px; padding: 7px 12px; }
+  .side-tab { min-height: 32px; }
   .detail-panel dl div { padding: 5px 0; }
   .conversation-message { margin-bottom: 6px; padding: 7px 8px; }
 }

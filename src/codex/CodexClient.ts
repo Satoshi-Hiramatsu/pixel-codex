@@ -18,6 +18,18 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+/**
+ * `askOnce` で走らせている裏方のスレッド。オフィスには出さないので、
+ * 届いた文章はここに溜めて、ターンが終わったところで呼び出し元へ返します。
+ */
+interface HelperTurn {
+  /** ストリーミングで届く途中経過。ターンが終わるまで上書きし続けます。 */
+  streamed: string;
+  /** 完了した発言。こちらのほうが確実なので、あれば優先します。 */
+  completed: string;
+  settle: (result: { text: string } | { error: Error }) => void;
+}
+
 /** 添付のうち、Codexへ実際に送る最小限の情報。 */
 export interface TurnAttachment {
   path: string;
@@ -38,6 +50,7 @@ export class CodexClient extends EventEmitter {
   private sequence = 0;
   private pending = new Map<number, PendingRequest>();
   private serverRequests = new Map<number | string, string>();
+  private helperTurns = new Map<string, HelperTurn>();
 
   get running(): boolean {
     return Boolean(this.child && !this.child.killed);
@@ -144,6 +157,38 @@ export class CodexClient extends EventEmitter {
     )) as Record<string, unknown>;
     const turn = result?.turn as Record<string, unknown> | undefined;
     return { turnId: String(turn?.id ?? result?.turnId ?? '') || undefined };
+  }
+
+  /**
+   * 文章をひとつだけ書いてもらう、使い捨てのスレッド。スキルの下書きのような
+   * 裏方の相談に使います。オフィスへは出社させないので、このスレッドのイベントは
+   * `pixel/helper` としてだけ流し、費用の計上にだけ使われます。
+   */
+  async askOnce(
+    cwd: string,
+    prompt: string,
+    options: { model?: string; effort?: string } = {},
+    timeoutMs = 180_000,
+  ): Promise<string> {
+    const { threadId } = await this.startThread(cwd, options);
+    return new Promise<string>((resolve, reject) => {
+      const settle = (result: { text: string } | { error: Error }): void => {
+        // 先に片付いていれば何もしません（時間切れと完了が競り合うため）。
+        if (!this.helperTurns.delete(threadId)) return;
+        clearTimeout(timer);
+        if ('error' in result) reject(result.error);
+        else resolve(result.text);
+      };
+      // イベントは次の実行ターン以降に届くので、`timer` は必ず用意されています。
+      const timer = setTimeout(
+        () => settle({ error: new Error('Codexからの返事が時間内に届きませんでした。') }),
+        timeoutMs,
+      );
+      this.helperTurns.set(threadId, { streamed: '', completed: '', settle });
+      this.sendTask(threadId, prompt).catch((error) =>
+        settle({ error: error instanceof Error ? error : new Error(String(error)) }),
+      );
+    });
   }
 
   /**
@@ -293,6 +338,19 @@ export class CodexClient extends EventEmitter {
       return;
     }
 
+    // 裏方のスレッドは画面に出さず、費用の計上に必要な分だけ本体へ渡します。
+    const helperThreadId = this.helperThreadFor(message.params);
+    if (helperThreadId) {
+      if (message.id !== undefined && message.method) {
+        // 相談は文章だけで終わる約束なので、道具を使いたいと言われたら断ります。
+        this.write({ id: message.id, result: { decision: 'decline' } });
+        return;
+      }
+      this.collectHelper(helperThreadId, message);
+      this.emit('event', { method: 'pixel/helper', params: message.params });
+      return;
+    }
+
     if (message.id !== undefined && message.method) {
       this.serverRequests.set(message.id, message.method);
       this.emit('event', {
@@ -305,6 +363,46 @@ export class CodexClient extends EventEmitter {
 
     if (message.method) {
       this.emit('event', { method: message.method, params: message.params });
+    }
+  }
+
+  private helperThreadFor(params: Record<string, unknown> | undefined): string | undefined {
+    if (!params || !this.helperTurns.size) return undefined;
+    const thread = params.thread as Record<string, unknown> | undefined;
+    const item = params.item as Record<string, unknown> | undefined;
+    for (const candidate of [params.threadId, thread?.id, item?.threadId]) {
+      if (typeof candidate === 'string' && this.helperTurns.has(candidate)) return candidate;
+    }
+    return undefined;
+  }
+
+  /** 裏方のスレッドから届いた文章を溜め、ターンが終わったら呼び出し元へ返します。 */
+  private collectHelper(threadId: string, message: RpcMessage): void {
+    const helper = this.helperTurns.get(threadId);
+    if (!helper) return;
+    const params = message.params ?? {};
+
+    if (message.method === 'item/agentMessage/delta') {
+      helper.streamed += String(params.delta ?? '');
+      return;
+    }
+    if (message.method === 'item/completed') {
+      const item = params.item as Record<string, unknown> | undefined;
+      if (String(item?.type ?? '').toLowerCase() === 'agentmessage') {
+        helper.completed = String(item?.text ?? '');
+      }
+      return;
+    }
+    if (message.method === 'turn/completed') {
+      const turn = params.turn as Record<string, unknown> | undefined;
+      if (turn?.error) {
+        helper.settle({ error: new Error('Codexが回答を作成できませんでした。') });
+        return;
+      }
+      const text = (helper.completed || helper.streamed).trim();
+      helper.settle(
+        text ? { text } : { error: new Error('Codexから回答が返りませんでした。') },
+      );
     }
   }
 
@@ -322,5 +420,7 @@ export class CodexClient extends EventEmitter {
       request.reject(error);
     }
     this.pending.clear();
+    for (const helper of [...this.helperTurns.values()]) helper.settle({ error });
+    this.helperTurns.clear();
   }
 }

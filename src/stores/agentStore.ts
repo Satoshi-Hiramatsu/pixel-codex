@@ -178,6 +178,31 @@ const directorColor = 0xd8863f;
 const accountantColor = 0x9d7fc4;
 export const accountantAgentId = 'accountant-desk';
 
+/**
+ * スキルの下書きをCodexに相談したときの費用のまとめ先。
+ * この相談は使い捨てのスレッドで走り、オフィスには誰も出社しません。
+ */
+export const skillHelperThreadId = 'skill-helper';
+export const skillHelperName = 'スキル指南役';
+const skillHelperRole = 'スキル作成の相談';
+const skillHelperColor = 0x8fb9a8;
+
+/** 会計の並びに出す名前。退勤した人と裏方の相談を、それらしく見せます。 */
+export function threadDisplayName(threadId: string, name?: string): string {
+  if (name) return name;
+  return threadId === skillHelperThreadId ? skillHelperName : '退勤したスタッフ';
+}
+
+export function threadDisplayRole(threadId: string, role?: string): string {
+  if (role) return role;
+  return threadId === skillHelperThreadId ? skillHelperRole : '過去のスレッド';
+}
+
+export function threadDisplayColor(threadId: string, color?: number): number {
+  if (color !== undefined) return color;
+  return threadId === skillHelperThreadId ? skillHelperColor : 0x94a0a0;
+}
+
 const now = Date.now();
 const demoAgents: AgentState[] = [
   {
@@ -1359,9 +1384,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         );
         return {
           threadId,
-          name: agent?.name ?? '退勤したスタッフ',
-          role: agent?.role ?? '過去のスレッド',
-          color: agent?.color ?? 0x94a0a0,
+          name: threadDisplayName(threadId, agent?.name),
+          role: threadDisplayRole(threadId, agent?.role),
+          color: threadDisplayColor(threadId, agent?.color),
           usage: entry.usage,
           yen: jpyCost(entry.usage, state.costSettings),
           tasks: state.taskHistory[threadId] ?? [],
@@ -1452,10 +1477,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   handleCodexEvent: (event) => {
     const params = event.params ?? {};
     const method = event.method;
-    const threadId =
-      textAt(params, 'threadId') ??
-      textAt(params, 'thread', 'id') ??
-      textAt(params, 'item', 'threadId');
+    /**
+     * 裏方の相談（スキルの下書きなど）。オフィスには出社させないので、
+     * 使った分だけ「スキル指南役」の名前でまとめて計上します。
+     */
+    const helper = method === 'pixel/helper';
+    const threadId = helper
+      ? skillHelperThreadId
+      : textAt(params, 'threadId') ??
+        textAt(params, 'thread', 'id') ??
+        textAt(params, 'item', 'threadId');
     const turnId = textAt(params, 'turnId') ?? textAt(params, 'turn', 'id');
     /**
      * 走っているターンの番号は「割り込みで指示できるか」の判断に使うので、
@@ -1502,6 +1533,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     // 相乗りしてくることもあるので、どのイベントでも見ておきます。
     const rateLimits = readRateLimits(valueAt(params, 'rateLimits') ?? valueAt(params, 'rate_limits'));
     if (rateLimits) set({ rateLimits });
+
+    // 計上が済んだら、裏方の相談はここで終わりです。画面には何も出しません。
+    if (helper) return;
 
     if (method === 'pixel/disconnected') {
       get().setConnection('disconnected', '切断');

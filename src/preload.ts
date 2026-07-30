@@ -21,6 +21,15 @@ const api: PixelCodexApi = {
       return '';
     }
   },
+  readSkillBook: (workspace) => ipcRenderer.invoke('skills:read-book', workspace),
+  saveSkill: (scope, workspace, draft) =>
+    ipcRenderer.invoke('skills:save', scope, workspace, draft),
+  deleteSkill: (scope, workspace, id) =>
+    ipcRenderer.invoke('skills:delete', scope, workspace, id),
+  setEquippedSkills: (scope, workspace, ids) =>
+    ipcRenderer.invoke('skills:set-equipped', scope, workspace, ids),
+  listSkillShelves: (workspaces) => ipcRenderer.invoke('skills:list-shelves', workspaces),
+  askCodex: (cwd, prompt, options) => ipcRenderer.invoke('codex:ask', cwd, prompt, options),
   getRepoStatus: (workspace) => ipcRenderer.invoke('saves:status', workspace),
   initRepo: (workspace) => ipcRenderer.invoke('saves:init', workspace),
   listSaves: (workspace) => ipcRenderer.invoke('saves:list', workspace),

@@ -20,7 +20,14 @@ import { characterPortrait } from './game/characterSheet';
 import { roomNameFor } from './game/officeLayout';
 import { PhaserCanvas } from './game/PhaserCanvas';
 import { effortOptions, modelLabel, modelOptions, resolveModelId } from './models';
-import { useAgentStore } from './stores/agentStore';
+import { SkillBook, useSkillBook } from './SkillBook';
+import { skillBriefing } from './skills/skillFile';
+import {
+  threadDisplayColor,
+  threadDisplayName,
+  threadDisplayRole,
+  useAgentStore,
+} from './stores/agentStore';
 import type {
   AgentProfile,
   AgentState,
@@ -81,7 +88,14 @@ const roadmapStatusLabels = {
  * 工程を左から右へ並べた進み具合の帯。「どこまで進んだか」が一目で分かるように、
  * 通り過ぎた区間は緑、作業中の区間は途中まで金色に塗ります。
  */
-function RoadmapMilestones({ steps }: { steps: RoadmapStep[] }): React.JSX.Element {
+function RoadmapMilestones({
+  steps,
+  vertical = false,
+}: {
+  steps: RoadmapStep[];
+  /** フロア図の右に立てる縦長の進行表かどうか。横に流す進行表ウィンドウとは並びだけが違います。 */
+  vertical?: boolean;
+}): React.JSX.Element {
   const visibleSteps = steps.length
     ? steps
     : [
@@ -95,11 +109,15 @@ function RoadmapMilestones({ steps }: { steps: RoadmapStep[] }): React.JSX.Eleme
     ? activeIndex
     : visibleSteps.filter((step) => step.status === 'done').length;
   return (
-    <div className={`roadmap-milestones ${steps.length ? '' : 'empty'}`} aria-label="工程マイルストーン">
+    <div
+      className={`roadmap-milestones ${vertical ? 'vertical' : ''} ${steps.length ? '' : 'empty'}`}
+      aria-label="工程マイルストーン"
+    >
       {visibleSteps.map((step, index) => {
         // 工程と工程をつなぐ線。完了ぶんは塗りきり、作業中はその工程の半分まで塗ります。
         const linkFill = step.status === 'done' ? 100 : step.status === 'active' ? 50 : 0;
         const isCurrent = index === currentIndex && step.status !== 'done';
+        const fill = vertical ? { height: `${linkFill}%` } : { width: `${linkFill}%` };
         return (
           <div
             className={`roadmap-milestone ${step.status} ${isCurrent ? 'current' : ''}`}
@@ -107,7 +125,7 @@ function RoadmapMilestones({ steps }: { steps: RoadmapStep[] }): React.JSX.Eleme
           >
             {index < visibleSteps.length - 1 && (
               <span className={`roadmap-link ${step.status}`} aria-hidden="true">
-                <b style={{ width: `${linkFill}%` }} />
+                <b style={fill} />
               </span>
             )}
             <i aria-hidden="true">{step.status === 'done' ? '✓' : index + 1}</i>
@@ -136,8 +154,6 @@ const signHeadlines: Record<AgentState['status'], string> = {
   error: 'エラーを確認中',
 };
 
-const signboardLimit = 4;
-
 interface SignEntry {
   id: string;
   name: string;
@@ -148,70 +164,20 @@ interface SignEntry {
   tone: 'attention' | 'work';
 }
 
+/** 右カラムのタブ。フロア図を広く取るため、4つの情報を1枚ずつ切り替えます。 */
+type SideTab = 'roster' | 'profile' | 'meeting' | 'log';
+
+const sideTabs: { id: SideTab; label: string; eyebrow: string }[] = [
+  { id: 'roster', label: '名簿', eyebrow: 'ATTENDANCE' },
+  { id: 'profile', label: 'プロフィール', eyebrow: 'STAFF PROFILE' },
+  { id: 'meeting', label: '会議・回答', eyebrow: 'TEAM MEETING' },
+  { id: 'log', label: 'ログ', eyebrow: 'OFFICE LOG' },
+];
+
 function signHeadline(agent: AgentState): string {
   const activity = agent.activity.replace(/\s+/g, ' ').trim();
   if (/中$/.test(activity)) return activity;
   return signHeadlines[agent.status];
-}
-
-/**
- * 「いま誰が何をしているか」だけを、フロアの上に大きく掲げる看板です。
- * 承認・回答待ちが最優先、次に手を動かしている担当が並び、休憩と退勤は
- * 右端に人数だけまとめます。
- */
-function WorkSignboard({
-  entries,
-  hidden,
-  resting,
-  left,
-  idleNote,
-  onSelect,
-}: {
-  entries: SignEntry[];
-  hidden: number;
-  resting: number;
-  left: number;
-  idleNote: string;
-  onSelect: (id: string) => void;
-}): React.JSX.Element {
-  return (
-    <section className="worksign-bar" aria-label="いまの作業看板">
-      <div className="worksign-plate">
-        <span>NOW WORKING</span>
-        <strong>作業中</strong>
-        <b>{entries.length + hidden}</b>
-      </div>
-      <div className="worksign-cards">
-        {entries.length === 0 ? (
-          <p className="worksign-empty">{idleNote}</p>
-        ) : (
-          entries.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              className={`worksign-card ${entry.tone}`}
-              onClick={() => onSelect(entry.id)}
-              title={`${entry.name}（${entry.role}）｜${entry.headline}`}
-            >
-              <img src={characterPortrait(entry.color)} alt="" width={32} height={40} />
-              <span className="worksign-copy">
-                <span className="worksign-who">
-                  <b>{entry.name}</b>
-                  <small>{entry.room}</small>
-                </span>
-                <strong className="worksign-headline">{entry.headline}</strong>
-              </span>
-            </button>
-          ))
-        )}
-        {hidden > 0 && <span className="worksign-more">ほか{hidden}名</span>}
-      </div>
-      <div className="worksign-away">
-        <span className="rest"><i />休憩 <b>{resting}</b></span>
-        <span className="left"><i />退勤 <b>{left}</b></span>
-      </div>
-    </section>
-  );
 }
 
 function formatElapsed(ms: number): string {
@@ -406,6 +372,8 @@ export function App(): React.JSX.Element {
   const [blackboardOpen, setBlackboardOpen] = useState(false);
   const [payrollOpen, setPayrollOpen] = useState(false);
   const [roadmapOpen, setRoadmapOpen] = useState(false);
+  // 右カラムは4枚のタブを1枚ずつ出します。縦積みをやめたぶんフロア図に高さを回せます。
+  const [sideTab, setSideTab] = useState<SideTab>('roster');
   const [savesOpen, setSavesOpen] = useState(false);
   const [saves, setSaves] = useState<SaveSlot[]>([]);
   const [repoStatus, setRepoStatus] = useState<RepoStatus | null>(null);
@@ -421,6 +389,8 @@ export function App(): React.JSX.Element {
     workspace: string;
   } | null>(null);
   const [staffOpen, setStaffOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const skillBox = useSkillBook(workspace);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryPath, setLibraryPath] = useState('');
   const [libraryEntries, setLibraryEntries] = useState<WorkspaceEntry[]>([]);
@@ -488,9 +458,9 @@ export function App(): React.JSX.Element {
           );
           return {
             threadId,
-            name: agent?.name ?? '退勤したスタッフ',
-            role: agent?.role ?? '過去のスレッド',
-            color: agent?.color ?? 0x94a0a0,
+            name: threadDisplayName(threadId, agent?.name),
+            role: threadDisplayRole(threadId, agent?.role),
+            color: threadDisplayColor(threadId, agent?.color),
             usage: entry.usage,
             yen: jpyCost(entry.usage, costSettings),
           };
@@ -574,6 +544,24 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     setQuestionAnswers({});
   }, [questionRequest?.requestId]);
+
+  // 質問が来たら会議タブへ自動で切り替えます。タブの裏で回答待ちが埋もれると詰むためです。
+  useEffect(() => {
+    if (questionRequest) setSideTab('meeting');
+  }, [questionRequest?.requestId]);
+
+  // フロア図の社員をクリックしたときも、右カラムにその人のプロフィールを出します。
+  // 初回表示のぶんは切り替えません（起動直後にタブが動くと落ち着かないためです）。
+  const lastSelectedId = useRef<string | null>(null);
+  useEffect(() => {
+    const id = selectedAgentId;
+    if (lastSelectedId.current === null) {
+      lastSelectedId.current = id;
+      return;
+    }
+    if (id && id !== lastSelectedId.current) setSideTab('profile');
+    lastSelectedId.current = id;
+  }, [selectedAgentId]);
 
   useEffect(() => {
     if (latestReport && autoOpenedReportId.current !== latestReport.id) {
@@ -932,6 +920,15 @@ export function App(): React.JSX.Element {
       '2. ロードマップは計画ツール（todo/plan）があればそちらにも登録してください。進行表として画面に掲示されます。',
       '3. 自分では実装せず、下記の担当者をサブエージェントとして起動し、適切に作業を割り振ってください。起動時の依頼文には必ず社員名と役割を明記してください。',
       '4. 各担当が終わるたびに進捗を短く報告し、最後に全体の完了報告をまとめてください。',
+      // 「どうしますか？」だけ返されると、社長は画面を見ても何を答えればいいのか分かりません。
+      '5. ユーザー（社長）に判断や意見を求めるときは、必ず次の3点をその場に具体的に書いてください。'
+        + '(a) 何について決めてほしいのか（対象のファイル名・機能名まで書く）、'
+        + '(b) 選択肢と、それぞれを選んだ場合にどうなるか、'
+        + '(c) あなたの推奨と、その理由。',
+      '6. 「どうしますか？」「どちらがいいですか？」のような、対象の分からない聞き方はしないでください。'
+        + '質問の見出しは、それだけ読めば用件が分かる一文にしてください。',
+      '7. 自分で調べれば分かることや、一般的な作法で決まることは質問せず、判断して進めてください。'
+        + '質問するのは、ユーザーの好みや業務都合でしか決められないことだけです。',
     ];
     if (team.length) {
       lines.push('', '[割り振れる担当者]');
@@ -944,7 +941,8 @@ export function App(): React.JSX.Element {
     } else {
       lines.push('', '※ いま雇用中の担当者がいません。社員名簿から雇用するようユーザーに伝えてください。');
     }
-    return lines.join('\n');
+    // 装備中のスキルは、社内ルールの続きとしてそのまま添えます。
+    return `${lines.join('\n')}${skillBriefing(skillBox.equipped)}`;
   }
 
   async function submitTask(event?: React.FormEvent): Promise<void> {
@@ -1216,6 +1214,20 @@ export function App(): React.JSX.Element {
    */
   const signboard = useMemo(() => {
     const waitingId = approval?.agentId ?? questionRequest?.agentId;
+    // 何も待っていないときの waitingId は undefined です。threadId を持たない経理担当と
+    // うっかり一致してしまい、ずっと「返事待ち」に見えていたので、必ず値の有無で守ります。
+    const isWaitingFor = (agent: AgentState): boolean =>
+      Boolean(waitingId) && (agent.id === waitingId || agent.threadId === waitingId);
+    // 何を聞かれているのかを、名簿の一行目にそのまま出します。「返事を待機中」だけでは
+    // 社長が画面を開き直さないと用件が分からないためです。
+    const waitingSubject = ((): string => {
+      if (approval) return approval.headline || approval.title;
+      const question = questionRequest?.questions[0];
+      if (!question) return '';
+      const extra = (questionRequest?.questions.length ?? 0) - 1;
+      const text = question.header || question.question;
+      return extra > 0 ? `${text}（ほか${extra}件）` : text;
+    })();
     const working: SignEntry[] = [];
     const attention: SignEntry[] = [];
     let resting = 0;
@@ -1231,8 +1243,7 @@ export function App(): React.JSX.Element {
         resting += 1;
         continue;
       }
-      const waiting =
-        agent.status === 'approval' || agent.id === waitingId || agent.threadId === waitingId;
+      const waiting = agent.status === 'approval' || isWaitingFor(agent);
       // 経理担当はプロジェクトの作業ではないので、返事待ちのときだけ載せます。
       if (!waiting && (agent.virtual || !['planning', 'researching', 'coding', 'running', 'error'].includes(agent.status))) {
         continue;
@@ -1243,7 +1254,9 @@ export function App(): React.JSX.Element {
         role: agent.role,
         room: roomNameFor(agent.status, agent.duty, presence),
         color: agent.color,
-        headline: waiting ? 'あなたの返事を待機中' : signHeadline(agent),
+        headline: waiting
+          ? waitingSubject || 'あなたの返事を待機中'
+          : signHeadline(agent),
         tone: waiting ? 'attention' : 'work',
       };
       if (waiting) attention.push(entry);
@@ -1252,12 +1265,31 @@ export function App(): React.JSX.Element {
 
     const ordered = [...attention, ...working];
     return {
-      entries: ordered.slice(0, signboardLimit),
-      hidden: Math.max(0, ordered.length - signboardLimit),
+      // 名簿の各行に「いまの作業」を出すための引き当て表。作業看板を名簿に統合したので、
+      // 看板が持っていた見出しはここから配ります。
+      byId: new Map(ordered.map((entry) => [entry.id, entry])),
+      workingCount: ordered.length,
+      attentionCount: attention.length,
       resting,
       left,
     };
-  }, [agents, approval?.agentId, questionRequest?.agentId]);
+  }, [agents, approval, questionRequest]);
+
+  // 名簿の並び：返事待ち → 作業中 → 待機 → 休憩 → 退勤。上から見れば手番が分かります。
+  const rosterAgents = useMemo(() => {
+    const rank = (agent: AgentState): number => {
+      const presence = agent.presence ?? 'working';
+      if (presence === 'left') return 4;
+      if (presence === 'lounge') return 3;
+      const entry = signboard.byId.get(agent.id);
+      if (entry?.tone === 'attention') return 0;
+      if (entry) return 1;
+      return 2;
+    };
+    return agents
+      .map((agent, index) => ({ agent, index }))
+      .sort((a, b) => rank(a.agent) - rank(b.agent) || a.index - b.index);
+  }, [agents, signboard]);
 
   const signboardIdleNote =
     connection !== 'connected'
@@ -1343,6 +1375,15 @@ export function App(): React.JSX.Element {
           <button className="staff-button" type="button" onClick={() => setStaffOpen(true)}>
             <span>社員名簿</span>
             <strong>{hiredProfiles.length}</strong>
+          </button>
+          <button
+            className={`skill-button ${skillBox.equipped.length ? 'has-results' : ''}`}
+            type="button"
+            title="スキルブック（装備したルールが次の指示から効きます）"
+            onClick={() => setSkillsOpen(true)}
+          >
+            <span>スキル</span>
+            <strong>{skillBox.equipped.length || '技'}</strong>
           </button>
           <button
             className={`blackboard-button ${deliverables.length ? 'has-results' : ''}`}
@@ -1453,128 +1494,72 @@ export function App(): React.JSX.Element {
         </div>
       )}
 
-      <section className="payroll-bar" aria-label="発生経費メーター">
-        <span className="payroll-coin" key={usageUpdatedAt} aria-hidden="true">￥</span>
-        <div className="payroll-readout">
-          <span className="payroll-caption">ただいまの発生経費</span>
-          <strong className="payroll-amount" aria-live="polite">
-            <i>￥</i>
-            <span className="payroll-digits">{yenDigits.main}</span>
-            <em>.{yenDigits.fraction}</em>
-            <b>円</b>
-          </strong>
-        </div>
-        <div className="payroll-gauge">
-          <div className="payroll-gauge-track">
-            <div className="payroll-gauge-fill" style={{ width: `${milestoneRatio * 100}%` }} />
-          </div>
-          <small>
-            つぎの目盛りまで あと ￥{Math.max(0, milestone - totalYen).toFixed(2)}
-            <span>（{milestone.toLocaleString('ja-JP')}円）</span>
-          </small>
-        </div>
-        <dl className="payroll-tokens">
-          <div><dt>入力</dt><dd>{formatTokens(usage.input)}</dd></div>
-          <div><dt>出力</dt><dd>{formatTokens(usage.output)}</dd></div>
-          <div><dt>合計</dt><dd>{formatTokens(usedTokens)}</dd></div>
-          <div>
-            <dt>取得状態</dt>
-            <dd
-              className={`usage-live ${usageUpdatedAt ? 'active' : 'waiting'}`}
-              title={usageUpdatedAt
-                ? `最終更新 ${new Date(usageUpdatedAt).toLocaleTimeString('ja-JP')}`
-                : '最初のモデル応答後に自動で更新されます'}
-            ><i />{usageUpdatedAt ? 'LIVE' : '待機中'}</dd>
-          </div>
-        </dl>
-        {/* AIの使用残量はゲームのHPとして見せます。Codexが枠を教えてくれるときだけ本物の数字が出ます。 */}
-        <section className={`hp-meter ${hpMain ? hpMain.tone : 'unknown'}`} aria-label="HP（AI使用残量）">
-          <div className="hp-plate">
-            <span>HP</span>
-            <small>AI使用残量</small>
-          </div>
-          <div className="hp-body">
-            <div className="hp-main">
-              <div className="hp-bar">
-                <i style={{ width: `${hpMain?.remaining ?? 0}%` }} />
-                <span className="hp-notches" aria-hidden="true" />
-              </div>
-              <strong className="hp-value" aria-live="polite">
-                {hpMain ? Math.round(hpMain.remaining) : '??'}
-                <em>/100</em>
-              </strong>
-            </div>
-            <div className="hp-notes">
-              {hpMain ? (
-                <>
-                  <span className="hp-window">{hpMain.label}</span>
-                  <span className="hp-reset">{hpMain.reset || '回復時刻は未提供'}</span>
-                </>
-              ) : (
-                <span className="hp-window">
-                  {connection === 'connected'
-                    ? 'このプランでは残量が取得できません'
-                    : '接続すると表示されます'}
-                </span>
-              )}
-              {hpSub && (
-                <span className="hp-sub" title={`${hpSub.label}の残量 ${Math.round(hpSub.remaining)}%`}>
-                  <small>{hpSub.label}</small>
-                  <span className="hp-sub-bar">
-                    <i className={hpSub.tone} style={{ width: `${hpSub.remaining}%` }} />
-                  </span>
-                  <b className={hpSub.tone}>{Math.round(hpSub.remaining)}%</b>
-                </span>
-              )}
-            </div>
-          </div>
-        </section>
-        <div className="payroll-actions">
-          <button className="payroll-open" type="button" onClick={() => setPayrollOpen(true)}>
-            明細をひらく →
-          </button>
-          <button
-            className="payroll-clear"
-            type="button"
-            onClick={resetPayroll}
-            title="ここまでの発生経費を0円に戻します。保存済みの会計報告は残ります"
-          >
-            経費を0円にもどす
-          </button>
-        </div>
-      </section>
-
-      {/* 進行表：統括責任者が引いたロードマップを、いつでも見える場所に掲示します。 */}
-      <section className="roadmap-bar" aria-label="プロジェクト進行表">
-        <div className="roadmap-plate">
-          <span>ROADMAP</span>
-          <strong>進行表</strong>
-        </div>
-        <div className="roadmap-copy">
-          <strong title={roadmap.title}>{roadmap.title || 'まだ進行表はありません'}</strong>
-          <small className={`roadmap-waiting ${progressWaiting.tone}`}>
-            <i />{progressWaiting.text}
-          </small>
-        </div>
-        <RoadmapMilestones steps={roadmap.steps} />
-        <div className="roadmap-meta">
-          <span>経過 {projectStartedAt ? formatElapsed(Date.now() - projectStartedAt) : '―'}</span>
-          <span>{directorAgent?.name ?? '東葛大五郎'} が進行管理</span>
-        </div>
-        <button className="roadmap-open" type="button" onClick={() => setRoadmapOpen(true)}>
-          進行表をひらく →
+      {/*
+        経費・HP・進行表をひとつの細いHUDにまとめます。3本の帯が積み上がると
+        開発フロア図の高さを食うので、ここは要点だけを出し、詳しい数字は
+        「明細」と「進行表」のウィンドウに任せます。
+      */}
+      <section className="hud-bar" aria-label="ステータスHUD">
+        <button
+          className="hud-cell hud-payroll"
+          type="button"
+          onClick={() => setPayrollOpen(true)}
+          title={`ただいまの発生経費 ￥${totalYen.toFixed(2)}／入力 ${formatTokens(usage.input)}・出力 ${formatTokens(usage.output)}・合計 ${formatTokens(usedTokens)}トークン。押すと明細をひらきます`}
+        >
+          <span className="hud-coin" key={usageUpdatedAt} aria-hidden="true">￥</span>
+          <span className="hud-payroll-body">
+            <strong className="hud-yen" aria-live="polite">
+              <i>￥</i>
+              <span className="hud-digits">{yenDigits.main}</span>
+              <em>.{yenDigits.fraction}</em>
+            </strong>
+            <span className="hud-gauge" aria-hidden="true">
+              <i style={{ width: `${milestoneRatio * 100}%` }} />
+            </span>
+          </span>
+          <span
+            className={`hud-live ${usageUpdatedAt ? 'active' : 'waiting'}`}
+            title={usageUpdatedAt
+              ? `最終更新 ${new Date(usageUpdatedAt).toLocaleTimeString('ja-JP')}`
+              : '最初のモデル応答後に自動で更新されます'}
+          ><i />{usageUpdatedAt ? 'LIVE' : '待機'}</span>
         </button>
-      </section>
 
-      {/* 作業看板：いま誰が何をしているかを、フロアの上に大きく掲げます。 */}
-      <WorkSignboard
-        entries={signboard.entries}
-        hidden={signboard.hidden}
-        resting={signboard.resting}
-        left={signboard.left}
-        idleNote={signboardIdleNote}
-        onSelect={selectAgent}
-      />
+        {/* AIの使用残量はゲームのHPとして見せます。Codexが枠を教えてくれるときだけ本物の数字が出ます。 */}
+        <div
+          className={`hud-cell hud-hp ${hpMain ? hpMain.tone : 'unknown'}`}
+          aria-label="HP（AI使用残量）"
+          title={hpMain
+            ? `${hpMain.label}／${hpMain.reset || '回復時刻は未提供'}`
+            : connection === 'connected'
+              ? 'このプランでは残量が取得できません'
+              : '接続すると表示されます'}
+        >
+          <span className="hud-hp-label">HP</span>
+          <span className="hp-bar">
+            <i style={{ width: `${hpMain?.remaining ?? 0}%` }} />
+            <span className="hp-notches" aria-hidden="true" />
+          </span>
+          <strong className="hud-hp-value" aria-live="polite">
+            {hpMain ? Math.round(hpMain.remaining) : '??'}
+            <em>/100</em>
+          </strong>
+          {hpSub && (
+            <span className="hud-hp-sub" title={`${hpSub.label}の残量 ${Math.round(hpSub.remaining)}%`}>
+              <small>{hpSub.label}</small>
+              <span className="hp-sub-bar">
+                <i className={hpSub.tone} style={{ width: `${hpSub.remaining}%` }} />
+              </span>
+            </span>
+          )}
+        </div>
+
+        <div className="hud-cell hud-status">
+          <span className={`roadmap-waiting ${progressWaiting.tone}`}>
+            <i />{progressWaiting.text}
+          </span>
+        </div>
+      </section>
 
       <section className="dashboard">
         <div className="office-panel panel">
@@ -1589,46 +1574,6 @@ export function App(): React.JSX.Element {
           </div>
           <div className="office-stage">
             <PhaserCanvas />
-            <section className="floor-roster" aria-label="出勤名簿">
-              <header>
-                <div><span>ATTENDANCE</span><h3>出勤名簿</h3></div>
-                <strong>{agents.length}名</strong>
-              </header>
-              <div className="floor-roster-list">
-                {agents.map((agent, index) => {
-                  const presence = agent.presence ?? 'working';
-                  return (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      className={`floor-roster-row ${agent.id === selected?.id ? 'selected' : ''} ${presence}`}
-                      onClick={() => selectAgent(agent.id)}
-                    >
-                      <span className="roster-number">{String(index + 1).padStart(2, '0')}</span>
-                      <img
-                        className="roster-avatar"
-                        src={characterPortrait(agent.color)}
-                        alt=""
-                        width={32}
-                        height={40}
-                      />
-                      <span className="agent-copy">
-                        <strong>{agent.name}</strong>
-                        <small>
-                          {presence === 'working'
-                            ? agent.role
-                            : presence === 'lounge'
-                              ? '休憩スペースで待機中'
-                              : '退勤しました'}
-                        </small>
-                      </span>
-                      <span className={`status-dot ${agent.status}`} title={statusLabels[agent.status]} />
-                    </button>
-                  );
-                })}
-              </div>
-              <footer><span>● 稼働状況</span><strong>{activeCount}/{agents.length}</strong></footer>
-            </section>
           </div>
           <form
             className={`task-composer ${taskAttachments.dragging ? 'dropping' : ''}`}
@@ -1660,9 +1605,128 @@ export function App(): React.JSX.Element {
           </form>
         </div>
 
-        <aside className="sidebar">
-          {selected && (
-            <section className="panel detail-panel">
+        {/*
+          進行表：フロア図のすぐ右に、上から下へ流れる縦長の掲示板として立てます。
+          横帯だとフロア図の高さを削るうえ、工程が増えると横に流れて読めなくなるためです。
+        */}
+        <section className="panel roadmap-column" aria-label="プロジェクト進行表">
+          <div className="panel-heading compact">
+            <div><span className="eyebrow">ROADMAP</span><h2>進行表</h2></div>
+            <span className="roadmap-column-count">
+              {roadmapProgress.done}/{roadmap.steps.length || '―'}
+            </span>
+          </div>
+          <p className="roadmap-column-title" title={roadmap.title}>
+            {roadmap.title || 'まだ進行表はありません'}
+          </p>
+          <div className="roadmap-column-body">
+            <RoadmapMilestones steps={roadmap.steps} vertical />
+          </div>
+          <div className="roadmap-column-foot">
+            <small className={`roadmap-waiting ${progressWaiting.tone}`}>
+              <i />{progressWaiting.text}
+            </small>
+            <span>経過 {projectStartedAt ? formatElapsed(Date.now() - projectStartedAt) : '―'}</span>
+            <span>{directorAgent?.name ?? '東葛大五郎'} が進行管理</span>
+            <button className="roadmap-open" type="button" onClick={() => setRoadmapOpen(true)}>
+              進行表をひらく →
+            </button>
+          </div>
+        </section>
+
+        <aside className="sidebar panel">
+          <div className="side-tabs" role="tablist" aria-label="右カラムの表示切り替え">
+            {sideTabs.map((tab) => {
+              const badge = tab.id === 'roster'
+                ? String(agents.length)
+                : tab.id === 'meeting' && messages.length
+                  ? String(messages.length)
+                  : '';
+              const attention =
+                (tab.id === 'roster' && signboard.attentionCount > 0) ||
+                (tab.id === 'meeting' && Boolean(questionRequest));
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={sideTab === tab.id}
+                  className={`side-tab ${sideTab === tab.id ? 'active' : ''} ${attention ? 'attention' : ''}`}
+                  onClick={() => setSideTab(tab.id)}
+                  title={tab.eyebrow}
+                >
+                  <span>{tab.label}</span>
+                  {badge && <b>{badge}</b>}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 出勤名簿。作業看板をここへ畳んだので、行そのものが「いまの作業」を告げます。 */}
+          {sideTab === 'roster' && (
+            <section className="side-body floor-roster" aria-label="出勤名簿">
+              {signboard.workingCount === 0 && (
+                <p className="roster-idle">{signboardIdleNote}</p>
+              )}
+              <div className="floor-roster-list">
+                {rosterAgents.map(({ agent, index }) => {
+                  const presence = agent.presence ?? 'working';
+                  const sign = signboard.byId.get(agent.id);
+                  // 上段が担当名なので、下段はいまの動きを出します。手が空いている人だけ
+                  // 「待機中」に落として、担当名を二度書きしないようにしています。
+                  const line = sign
+                    ? sign.headline
+                    : presence === 'lounge'
+                      ? '休憩スペースで待機中'
+                      : presence === 'left'
+                        ? '退勤しました'
+                        : agent.activity || '手が空いています';
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      className={`floor-roster-row ${agent.id === selected?.id ? 'selected' : ''} ${presence} ${sign?.tone ?? ''}`}
+                      onClick={() => {
+                        selectAgent(agent.id);
+                        setSideTab('profile');
+                      }}
+                      title={`${agent.name}（${agent.role}）｜${line}`}
+                    >
+                      <span className="roster-number">{String(index + 1).padStart(2, '0')}</span>
+                      <img
+                        className="roster-avatar"
+                        src={characterPortrait(agent.color)}
+                        alt=""
+                        width={32}
+                        height={40}
+                      />
+                      <span className="agent-copy">
+                        <span className="roster-who">
+                          <strong>{agent.name}</strong>
+                          <small>{sign ? sign.room : agent.role}</small>
+                        </span>
+                        <em className="roster-line">{line}</em>
+                      </span>
+                      <span className={`status-dot ${agent.status}`} title={statusLabels[agent.status]} />
+                    </button>
+                  );
+                })}
+              </div>
+              <footer>
+                <span>● 稼働 {activeCount}/{agents.length}</span>
+                <strong>休憩 {signboard.resting}／退勤 {signboard.left}</strong>
+              </footer>
+            </section>
+          )}
+
+          {sideTab === 'profile' && !selected && (
+            <div className="side-body side-empty">
+              <p>名簿タブか、フロア図の社員をクリックすると、ここに担当と追加指示の欄が出ます。</p>
+            </div>
+          )}
+
+          {sideTab === 'profile' && selected && (
+            <section className="side-body detail-panel">
               <div className="detail-title"><div><span className="eyebrow">STAFF PROFILE</span><h2>{selected.name}</h2></div><span className={`status-pill ${selected.status}`}>{statusLabels[selected.status]}</span></div>
               <dl>
                 <div><dt>担当</dt><dd>{selected.role}</dd></div>
@@ -1714,11 +1778,7 @@ export function App(): React.JSX.Element {
             </section>
           )}
 
-          <section className="panel conversation-panel">
-            <div className="panel-heading compact">
-              <div><span className="eyebrow">TEAM MEETING</span><h2>会議・回答</h2></div>
-              <span className="conversation-count">{messages.length}</span>
-            </div>
+          <section className="side-body conversation-panel" hidden={sideTab !== 'meeting'}>
             <div className="conversation-list" ref={conversationRef} aria-live="polite">
               {messages.length === 0 && (
                 <p className="conversation-empty">AIからのメッセージはまだありません。</p>
@@ -1776,17 +1836,18 @@ export function App(): React.JSX.Element {
             )}
           </section>
 
-          <section className="panel log-panel">
-            <div className="panel-heading compact"><div><span className="eyebrow">OFFICE LOG</span><h2>社内ログ</h2></div></div>
+          {sideTab === 'log' && (
+            <section className="side-body log-panel">
             <div className="log-list">
-              {logs.slice(0, 12).map((log) => (
+              {logs.slice(0, 40).map((log) => (
                 <div className={`log-entry ${log.level}`} key={log.id}>
                   <time>{new Date(log.time).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
                   <p>{log.message}</p>
                 </div>
               ))}
             </div>
-          </section>
+            </section>
+          )}
         </aside>
       </section>
 
@@ -1931,6 +1992,18 @@ export function App(): React.JSX.Element {
             </div>
           </section>
         </div>
+      )}
+
+      {skillsOpen && (
+        <SkillBook
+          box={skillBox}
+          workspace={workspace}
+          recentWorkspaces={recentWorkspaces}
+          modelSettings={modelSettings}
+          canAskCodex={connection === 'connected' && Boolean(workspace)}
+          onClose={() => setSkillsOpen(false)}
+          onLog={(message, level) => addLog(message, level)}
+        />
       )}
 
       {libraryOpen && (
