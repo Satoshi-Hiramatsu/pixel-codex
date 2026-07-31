@@ -90,3 +90,9 @@ typings/
 
 # Electron-Forge
 out/
+
+# Android companion generated files
+android-companion/.gradle/
+android-companion/.idea/
+android-companion/local.properties
+android-companion/**/build/

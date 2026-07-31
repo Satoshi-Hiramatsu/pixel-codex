@@ -28,6 +28,7 @@
 .connection-box small,
 .connection-box strong,
 .staff-button span,
+.communication-button span,
 .blackboard-button span,
 .library-button span,
 .payroll-window,
@@ -115,11 +116,16 @@ button { color: inherit; }
 .workspace-history .choose-new-workspace:hover { background: #4393bd; }
 
 .game-menu-buttons { display: flex; align-items: center; gap: 9px; }
-.staff-button, .blackboard-button, .library-button { height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 11px; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2), 3px 3px 0 #0a1b28; }
+.staff-button, .communication-button, .blackboard-button, .library-button { height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 11px; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2), 3px 3px 0 #0a1b28; }
 .staff-button { color: #fff0bd; border: 3px solid #7a491f; outline: 1px solid #e0ad58; background: #a95b2d; }
 .staff-button:hover { background: #c36e34; transform: translateY(-1px); }
-.staff-button span, .blackboard-button span, .library-button span { font-size: 11px; font-weight: 700; white-space: nowrap; }
-.staff-button strong, .blackboard-button strong, .library-button strong { min-width: 24px; height: 24px; display: grid; place-items: center; color: #202a25; background: #f0bd55; font: 700 11px Consolas, monospace; }
+.staff-button span, .communication-button span, .blackboard-button span, .library-button span { font-size: 11px; font-weight: 700; white-space: nowrap; }
+.staff-button strong, .communication-button strong, .blackboard-button strong, .library-button strong { min-width: 24px; height: 24px; display: grid; place-items: center; color: #202a25; background: #f0bd55; font: 700 11px Consolas, monospace; }
+
+.communication-button { color: #dffbf4; border: 3px solid #20574f; outline: 1px solid #65b9aa; background: #286d63; }
+.communication-button:hover { background: #328477; transform: translateY(-1px); }
+.communication-button strong { min-width: 30px; color: #173a35; background: #82cabe; font-size: 9px; }
+.communication-button.enabled strong { color: #173324; background: #83df9e; }
 
 .library-button { color: #fff0bd; border: 3px solid #68472a; outline: 1px solid #d7b46c; background: #80613a; }
 .library-button:hover { background: #967447; transform: translateY(-1px); }
@@ -305,6 +311,55 @@ textarea:disabled { color: #677376; background: #192124; }
 .log-entry p { min-width: 0; margin: 0; color: #b7c1be; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 
 footer { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; color: #5e6d70; border-top: 1px solid #273235; background: #111719; font: 8px Consolas, monospace; letter-spacing: .6px; }
+
+.communication-backdrop { position: fixed; inset: 0; z-index: 19; display: grid; place-items: center; padding: 28px; background: rgba(5, 14, 21, .84); }
+.communication-window { width: min(900px, calc(100vw - 56px)); max-height: calc(100vh - 56px); display: flex; flex-direction: column; overflow: hidden; color: #3d392e; border: 6px solid #235e56; outline: 3px solid #73c0b2; background: #d9d0ae; box-shadow: inset 0 0 0 2px #f1e6bd, 12px 14px 0 rgba(0,0,0,.5); }
+.communication-window .game-window-titlebar { border-bottom-color: #73c0b2; background: #286d63; }
+.communication-window .game-window-titlebar .title-icon { border-color: #174940; background: #8ed8cb; box-shadow: 3px 3px 0 #174940; }
+.communication-window .game-window-titlebar span { color: #bce8df; }
+.communication-window .game-window-titlebar h2 { text-shadow: 2px 2px 0 #174940; }
+.communication-body { min-height: 0; overflow: auto; padding: 14px; background-color: #c7bb91; background-image: linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg,rgba(255,255,255,.08) 1px,transparent 1px); background-size: 14px 14px; }
+.communication-status-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 12px; padding: 11px 13px; border: 3px solid #6d5938; background: #fff1c5; box-shadow: 4px 4px 0 rgba(77,54,28,.25); }
+.communication-status-card > div { display: flex; align-items: center; gap: 10px; }
+.communication-status-card > div > div { display: flex; flex-direction: column; gap: 3px; }
+.communication-status-card small { color: #7c6d58; font: 8px Consolas, monospace; letter-spacing: 1.5px; }
+.communication-status-card strong { color: #51422d; font-size: 13px; }
+.communication-lamp { width: 13px; height: 13px; background: #8c9189; box-shadow: 0 0 0 4px #d2c9a9; }
+.communication-lamp.connected { background: #55be78; box-shadow: 0 0 0 4px #c5dfbd; }
+.communication-lamp.connecting { background: #e9b74e; box-shadow: 0 0 0 4px #eadab0; animation: blink .8s steps(2) infinite; }
+.communication-lamp.error { background: #d95656; box-shadow: 0 0 0 4px #e6b6ae; }
+.communication-toggle, .communication-check { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 11px; font-weight: 700; line-height: 1.35; }
+.communication-toggle input, .communication-check input { width: 17px; height: 17px; flex: 0 0 auto; accent-color: #28796d; }
+.communication-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.communication-card { min-width: 0; padding: 12px; border: 3px solid #78613e; background: #f7e8ba; box-shadow: inset 0 -4px 0 #dcc68f, 4px 4px 0 rgba(77,54,28,.25); }
+.communication-card > header { display: flex; align-items: center; gap: 8px; margin: -12px -12px 12px; padding: 8px 10px; color: #fff5d5; border-bottom: 3px solid #78613e; background: #397f74; }
+.communication-card > header span { display: grid; place-items: center; width: 24px; height: 24px; color: #244a44; background: #9fe0d3; font: 900 9px Consolas, monospace; }
+.communication-card h3 { margin: 0; font: 700 13px var(--retro-font); }
+.communication-card > p { margin: 9px 0 0; color: #786a53; font-size: 9px; line-height: 1.6; }
+.communication-card > aside { margin-top: 10px; padding: 8px; color: #76512f; border: 2px solid #bd8653; background: #f2d29a; font-size: 10px; font-weight: 700; line-height: 1.5; }
+.communication-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+.communication-field > span { color: #67543a; font-size: 10px; font-weight: 900; }
+.communication-field input, .communication-field select { width: 100%; min-width: 0; height: 36px; padding: 0 9px; color: #34352f; border: 2px solid #8b744e; background: #fff8dc; outline: none; font-size: 11px; }
+.communication-field input:focus, .communication-field select:focus { border-color: #28796d; box-shadow: 0 0 0 2px #8acbbf; }
+.communication-check { margin: 8px 0; color: #504633; }
+.communication-check.important { padding: 8px; color: #244d46; border: 2px solid #5ba497; background: #d1e7cd; }
+.communication-test-button { min-height: 34px; padding: 0 12px; color: #effffb; border: 3px solid #1d544c; background: #397f74; box-shadow: 2px 2px 0 #8d6d3e; cursor: pointer; font-size: 10px; font-weight: 900; }
+.communication-test-button:hover { background: #49988b; }
+.communication-test-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.communication-test-button.usb { color: #27342e; border-color: #7d582c; background: #f0bd55; }
+.communication-test-button.usb:hover:not(:disabled) { background: #ffd477; }
+.communication-test-button:disabled { opacity: .55; cursor: wait; }
+.communication-rule { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 7px 9px; margin-top: 10px; font-size: 10px; line-height: 1.45; }
+.communication-rule b { color: #2f7469; }
+.communication-rule span { color: #61533e; }
+.communication-device { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 9px; color: #5a513f; border: 2px dashed #9b835b; background: #e8d8a8; }
+.communication-device span { color: #788078; font: 8px Consolas, monospace; letter-spacing: 1.4px; }
+.communication-device strong { overflow: hidden; font: 10px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.communication-device small { color: #87765c; font-size: 9px; }
+.communication-footer { height: auto; min-height: 49px; display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; padding: 7px 10px; color: #f0f6e9; border: 3px solid #245b53; background: #315e57; font-size: 10px; }
+.communication-footer span { line-height: 1.45; }
+.communication-footer button { flex: 0 0 auto; min-width: 76px; height: 31px; color: #2f3b35; border: 2px solid #74502e; background: #f0bd55; cursor: pointer; font-weight: 900; }
+.communication-footer button:hover { background: #ffd379; }
 
 .staff-backdrop { position: fixed; inset: 0; z-index: 18; display: grid; place-items: center; padding: 28px; background: rgba(5, 14, 21, .82); }
 .staff-window { width: min(1120px, calc(100vw - 56px)); height: min(760px, calc(100vh - 56px)); display: flex; flex-direction: column; overflow: hidden; border: 6px solid #70431f; outline: 3px solid #e0ad58; background: #d7be86; box-shadow: inset 0 0 0 2px #f2d990, 12px 14px 0 rgba(0,0,0,.5); }

@@ -1,7 +1,7 @@
 {
   "name": "pixel-codex",
   "productName": "Pixel Codex",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "A pixel office for visualizing and directing Codex agents",
   "main": ".webpack/main",
   "private": true,
@@ -10,6 +10,8 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
+    "relay:dev": "node tools/remote-relay.mjs",
+    "relay:verify": "node tools/verify-remote-relay.mjs",
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit"
   },
@@ -49,6 +51,7 @@
     "phaser": "^4.2.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "ws": "^8.21.1",
     "zustand": "^5.0.14"
   }
 }

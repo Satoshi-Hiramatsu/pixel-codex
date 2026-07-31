@@ -1,4 +1,23 @@
 import type { TokenUsage } from './costs';
+import type {
+  RemoteGatewayConfig,
+  RemoteGatewayStatus,
+  RemoteHostInfo,
+  RemoteInstruction,
+  RemoteInstructionResult,
+  RemoteStateSnapshot,
+  UsbTestSession,
+} from './remote/RemoteProtocol';
+
+export type {
+  RemoteGatewayConfig,
+  RemoteGatewayStatus,
+  RemoteHostInfo,
+  RemoteInstruction,
+  RemoteInstructionResult,
+  RemoteStateSnapshot,
+  UsbTestSession,
+} from './remote/RemoteProtocol';
 
 export type AgentStatus =
   | 'idle'
@@ -29,6 +48,7 @@ export type AgentDuty =
   | 'reviewer'
   | 'designer'
   | 'accountant'
+  | 'communicator'
   | 'writer'
   | 'general';
 
@@ -58,7 +78,7 @@ export interface AgentState {
   /** 手が空いた時刻。休憩から退勤へ移るまでの時間を計るのに使います。 */
   restingSince?: number;
   isRoot?: boolean;
-  /** Local-only staff (the accountant) never receive a Codex thread. */
+  /** Local-only staff, such as the accountant and communicator, never receive a Codex thread. */
   virtual?: boolean;
   updatedAt: number;
 }
@@ -91,7 +111,7 @@ export interface AgentProfile {
   hired: boolean;
   recommended?: boolean;
   custom?: boolean;
-  /** The director and the accountant are part of the company itself. */
+  /** Permanent staff are part of the company itself. */
   permanent?: boolean;
 }
 
@@ -369,6 +389,13 @@ export interface LoadResult {
 
 export interface PixelCodexApi {
   getAppInfo: () => Promise<{ cwd: string; version: string }>;
+  getRemoteHostInfo: () => Promise<RemoteHostInfo>;
+  configureRemoteGateway: (config: RemoteGatewayConfig) => Promise<RemoteGatewayStatus>;
+  startUsbRemoteTest: () => Promise<UsbTestSession>;
+  updateRemoteState: (state: RemoteStateSnapshot) => Promise<void>;
+  acknowledgeRemoteInstruction: (result: RemoteInstructionResult) => Promise<void>;
+  onRemoteStatus: (callback: (status: RemoteGatewayStatus) => void) => () => void;
+  onRemoteInstruction: (callback: (instruction: RemoteInstruction) => void) => () => void;
   chooseWorkspace: () => Promise<string | null>;
   chooseCodexExecutable: () => Promise<string | null>;
   listWorkspaceDirectory: (workspace: string, relativePath?: string) => Promise<WorkspaceEntry[]>;

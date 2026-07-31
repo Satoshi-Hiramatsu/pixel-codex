@@ -306,7 +306,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.leaveCheck = undefined;
     this.fadeTween?.remove();
     this.fadeTween = undefined;
-    this.walkTween?.remove();
+    this.walkTween?.stop();
     this.walkTween = undefined;
     super.destroy(fromScene);
   }
@@ -320,7 +320,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     if (!scene?.tweens || !this.active) return;
     if (path.length === 0) return;
     this.destination = { ...path[path.length - 1] };
-    this.walkTween?.remove();
+    this.walkTween?.stop();
 
     // 1タイルぶんずつの tween をつないで、角では必ず 90度で曲がるようにします。
     const timeline = path.map((step) => ({
@@ -358,7 +358,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
 
   /** 経路が見つからなかった時などに、瞬間移動でタイルを合わせます。 */
   snapTo(tile: Tile): void {
-    this.walkTween?.remove();
+    this.walkTween?.stop();
     this.walkTween = undefined;
     this.tile = { ...tile };
     this.destination = { ...tile };

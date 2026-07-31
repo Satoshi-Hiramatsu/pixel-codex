@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import started from 'electron-squirrel-startup';
 import fs from 'node:fs/promises';
@@ -13,6 +14,8 @@ import {
   saveAttachment,
 } from './files/attachments';
 import { createSave, getRepoStatus, initRepo, listSaves, loadSave } from './saves/gitSaves';
+import { RemoteGateway } from './remote/RemoteGateway';
+import { DevelopmentRelay } from './remote/DevelopmentRelay';
 import {
   deleteSkill,
   listSkillShelves,
@@ -21,7 +24,16 @@ import {
   setEquippedSkills,
   setUserDataRoot,
 } from './skills/skillStore';
-import type { CodexProcessInfo, SaveMeta, SkillScope, ThreadOptions } from './types';
+import type {
+  CodexProcessInfo,
+  RemoteGatewayConfig,
+  RemoteInstructionResult,
+  RemoteStateSnapshot,
+  SaveMeta,
+  SkillScope,
+  ThreadOptions,
+  UsbTestSession,
+} from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +49,23 @@ if (started) app.quit();
 app.enableSandbox();
 
 const codex = new CodexClient();
+let remoteGateway: RemoteGateway | undefined;
+const developmentRelay = new DevelopmentRelay();
+
+async function loadRemoteHostId(): Promise<string> {
+  const identityPath = path.join(app.getPath('userData'), 'remote-host.json');
+  try {
+    const stored = JSON.parse(await fs.readFile(identityPath, 'utf8')) as { hostId?: unknown };
+    if (typeof stored.hostId === 'string' && /^[a-f0-9-]{36}$/i.test(stored.hostId)) {
+      return stored.hostId;
+    }
+  } catch {
+    // The first launch has no remote identity yet.
+  }
+  const hostId = randomUUID();
+  await fs.writeFile(identityPath, JSON.stringify({ hostId }), { encoding: 'utf8', mode: 0o600 });
+  return hostId;
+}
 
 async function resolveWorkspaceItem(workspace: string, itemPath = ''): Promise<{
   root: string;
@@ -89,6 +118,55 @@ async function findOtherCodexProcesses(): Promise<CodexProcessInfo[]> {
   }
 }
 
+async function adbExecutable(): Promise<string> {
+  const roots = [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT]
+    .filter((value): value is string => Boolean(value));
+  if (process.env.LOCALAPPDATA) roots.push(path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk'));
+  for (const root of roots) {
+    const executable = path.join(root, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
+    try {
+      await fs.access(executable);
+      return executable;
+    } catch {
+      // Try the next standard Android SDK location.
+    }
+  }
+  throw new Error('Android SDKのadbが見つかりません。Android StudioでPlatform Toolsを導入してください。');
+}
+
+async function startUsbRemoteTest(): Promise<UsbTestSession> {
+  if (!remoteGateway) throw new Error('Remote Gatewayが初期化されていません。');
+  const relay = await developmentRelay.start();
+  const adb = await adbExecutable();
+  const { stdout } = await execFileAsync(adb, ['devices', '-l'], { timeout: 10_000, windowsHide: true });
+  const devices = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /\sdevice(?:\s|$)/.test(line))
+    .map((line) => line.split(/\s+/)[0]);
+  if (!devices.length) {
+    throw new Error('USBデバッグを許可したAndroid端末が見つかりません。');
+  }
+  if (devices.length > 1) {
+    throw new Error('Android端末が複数あります。テストする端末だけをUSB接続してください。');
+  }
+  const deviceSerial = devices[0];
+  await execFileAsync(adb, ['-s', deviceSerial, 'reverse', `tcp:${relay.port}`, `tcp:${relay.port}`], {
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  remoteGateway.configure({ enabled: true, relayUrl: relay.relayUrl, autoReconnect: true });
+  await execFileAsync(adb, [
+    '-s', deviceSerial,
+    'shell', 'am', 'start',
+    '-n', 'jp.pixelcodex.companion/.MainActivity',
+    '--es', 'relayUrl', relay.relayUrl,
+    '--es', 'hostId', remoteGateway.hostId,
+    '--ez', 'autoConnect', 'true',
+  ], { timeout: 15_000, windowsHide: true });
+  return { hostId: remoteGateway.hostId, relayUrl: relay.relayUrl, deviceSerial };
+}
+
 /** 画面から届いた置き場所の指定。知らない値はグローバル扱いにします。 */
 function normalizeScope(value: unknown): SkillScope {
   return value === 'project' ? 'project' : 'global';
@@ -110,6 +188,24 @@ codex.on('exit', (message) =>
 
 function registerIpc(): void {
   ipcMain.handle('app:info', () => ({ cwd: process.cwd(), version: app.getVersion() }));
+  ipcMain.handle('remote:host-info', () => ({
+    hostId: remoteGateway?.hostId ?? '',
+    status: remoteGateway?.getStatus() ?? { phase: 'disabled', label: '通信停止中' },
+  }));
+  ipcMain.handle('remote:configure', (_event, config: RemoteGatewayConfig) =>
+    remoteGateway?.configure({
+      enabled: config?.enabled === true,
+      relayUrl: typeof config?.relayUrl === 'string' ? config.relayUrl : '',
+      autoReconnect: config?.autoReconnect !== false,
+    }) ?? { phase: 'error', label: 'Gateway未初期化' },
+  );
+  ipcMain.handle('remote:start-usb-test', () => startUsbRemoteTest());
+  ipcMain.handle('remote:update-state', (_event, state: RemoteStateSnapshot) => {
+    remoteGateway?.updateState(state);
+  });
+  ipcMain.handle('remote:acknowledge', (_event, result: RemoteInstructionResult) => {
+    remoteGateway?.acknowledge(result);
+  });
   ipcMain.handle('app:choose-workspace', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0];
@@ -311,12 +407,17 @@ function createWindow(): void {
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   setUserDataRoot(app.getPath('userData'));
+  remoteGateway = new RemoteGateway(await loadRemoteHostId());
+  remoteGateway.on('status', (status) => broadcast('remote:status', status));
+  remoteGateway.on('instruction', (instruction) => broadcast('remote:instruction', instruction));
   registerIpc();
   createWindow();
 });
 app.on('before-quit', () => {
+  remoteGateway?.stop();
+  developmentRelay.stop();
   codex.stop();
   // 貼り付けた画像の置き場は、そのセッションのあいだだけ残しておけば十分です。
   void fs.rm(attachmentTempRoot(), { recursive: true, force: true }).catch(() => undefined);

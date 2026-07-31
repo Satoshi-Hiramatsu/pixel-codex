@@ -176,7 +176,9 @@ interface AgentStore {
 
 const directorColor = 0xd8863f;
 const accountantColor = 0x9d7fc4;
+const communicatorColor = 0x52a99a;
 export const accountantAgentId = 'accountant-desk';
+export const communicatorAgentId = 'communication-desk';
 
 /**
  * スキルの下書きをCodexに相談したときの費用のまとめ先。
@@ -285,6 +287,20 @@ const demoAgents: AgentState[] = [
     virtual: true,
     updatedAt: now,
   },
+  {
+    id: communicatorAgentId,
+    name: '通信担当',
+    role: 'モバイル通信担当',
+    duty: 'communicator',
+    status: 'idle',
+    task: 'Android端末からの連絡を待つ',
+    activity: '通信状態を監視中',
+    speech: '通信室でAndroid端末からの連絡を待っています',
+    speechKind: 'activity',
+    color: communicatorColor,
+    virtual: true,
+    updatedAt: now,
+  },
 ];
 
 const initialMessages: ConversationMessage[] = [
@@ -354,6 +370,17 @@ const defaultAgentProfiles: AgentProfile[] = [
     specialty: 'トークン使用量の監視、費用の記帳、会計報告の作成',
     personality: '一円単位まで気にする几帳面な帳簿番',
     color: accountantColor,
+    hired: true,
+    permanent: true,
+  },
+  {
+    id: 'communicator-profile',
+    name: '通信担当',
+    job: 'モバイル通信担当',
+    duty: 'communicator',
+    specialty: 'Android端末との接続監視、通知方針、遠隔指示の受け付け',
+    personality: '通信状態を静かに見守り、重要な連絡だけを確実に取り次ぐ',
+    color: communicatorColor,
     hired: true,
     permanent: true,
   },
@@ -435,7 +462,7 @@ function loadAgentProfiles(): AgentProfile[] {
     const defaultIds = new Set(defaultAgentProfiles.map((profile) => profile.id));
     const defaults = defaultAgentProfiles.map((profile) => ({
       ...profile,
-      // The director and the accountant are always on staff.
+      // Permanent office staff are always on duty.
       hired: profile.permanent ? true : storedById.get(profile.id)?.hired ?? profile.hired,
     }));
     const custom = parsed
@@ -1071,6 +1098,23 @@ function accountantAgent(): AgentState {
   };
 }
 
+function communicatorAgent(): AgentState {
+  return {
+    id: communicatorAgentId,
+    name: '通信担当',
+    role: 'モバイル通信担当',
+    duty: 'communicator',
+    status: 'idle',
+    task: 'Android端末からの連絡を待つ',
+    activity: '通信状態を監視中',
+    speech: '通信室でAndroid端末からの連絡を待っています',
+    speechKind: 'activity',
+    color: communicatorColor,
+    virtual: true,
+    updatedAt: Date.now(),
+  };
+}
+
 function formatDuration(ms: number): string {
   const minutes = Math.round(ms / 60_000);
   if (minutes < 1) return '1分未満';
@@ -1145,10 +1189,13 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         speech: '指示をくれれば、担当に割り振るぞ。',
         speechKind: 'activity',
       });
-      // 経理担当はCodexのスレッドを持たず、いつも経理室に常駐しています。
-      const agents = withDirector.some((agent) => agent.id === accountantAgentId)
+      // 経理担当と通信担当はCodexのスレッドを持たず、それぞれの部屋に常駐します。
+      const withAccountant = withDirector.some((agent) => agent.id === accountantAgentId)
         ? withDirector
         : [...withDirector, accountantAgent()];
+      const agents = withAccountant.some((agent) => agent.id === communicatorAgentId)
+        ? withAccountant
+        : [...withAccountant, communicatorAgent()];
       return {
         rootThreadId,
         agents,
@@ -1279,7 +1326,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     const busy = state.agents.filter(
       (agent) =>
         agent.id !== director.id &&
-        agent.duty !== 'accountant' &&
+        !agent.virtual &&
         workingStatuses.includes(agent.status),
     ).length;
     // 「手が空いている」＝自分では手を動かしていないとき。担当が動いている間の
@@ -1297,7 +1344,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       const active = steps.filter((step) => step.status === 'active').length;
       percent = Math.round(((done + active * 0.5) / steps.length) * 100);
     } else {
-      const workers = state.agents.filter((agent) => agent.duty !== 'accountant');
+      const workers = state.agents.filter((agent) => !agent.virtual);
       const finished = workers.filter((agent) => agent.status === 'done').length;
       percent = workers.length ? Math.round((finished / workers.length) * 100) : 0;
     }
@@ -1800,7 +1847,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       // あとに終わることもあるので、どのスレッドの完了でも判定します。
       const state = get();
       const stillWorking = state.agents.some(
-        (agent) => agent.duty !== 'accountant' && workingStatuses.includes(agent.status),
+        (agent) => !agent.virtual && workingStatuses.includes(agent.status),
       );
       const rootAgent = state.agents.find(
         (agent) => agent.id === state.rootThreadId || agent.threadId === state.rootThreadId,

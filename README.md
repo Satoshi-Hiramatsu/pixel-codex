@@ -170,6 +170,21 @@ src/
 
 レンダラーにはNode.jsや任意IPCを公開していません。`contextIsolation`とsandboxを有効にし、操作単位の限定APIのみをpreloadから公開しています。
 
+## Android連携（開発中）
+
+通信室からRelay接続と通知方針を設定できます。Androidアプリのソースは[`android-companion`](android-companion)にあります。初期実装では、PCの状態確認とAndroidからの新規・追加テキスト指示に対応しています。承認と質問への回答はPCで行います。
+
+USB接続した開発端末では、通信室の`USB実機テストを開始`を押すだけで、内蔵Relay、ADB転送、Androidアプリ起動と接続設定を自動化できます。
+
+ローカル結合試験用のRelayは、16文字以上の一時トークンを指定して起動します。
+
+```powershell
+$env:PIXEL_CODEX_RELAY_TOKEN='replace-with-a-long-random-token'
+npm.cmd run relay:dev
+```
+
+実運用向けのQRペアリング、端末鍵、FCM通知は未実装です。開発用URLトークンを本番認証として使用しないでください。
+
 ## 配布物
 
 `npm run make`後、WindowsインストーラーとZIPが`out/make/`へ生成されます。コード署名と正式アイコンはリリース前に別途設定してください。
@@ -177,6 +192,17 @@ src/
 配布先のPCに必要な条件は[docs/pc-requirements.md](docs/pc-requirements.md)にまとめています。
 
 ## 更新履歴
+
+### V0.2.0 — アプリ連携版開発開始
+
+- PCオフィスに通信室と常設の通信担当者を追加
+- Relay接続、状態同期、通知内容、Androidからの指示受付を通信室へ集約
+- Android Composeコンパニオンアプリを追加
+- Androidから新規指示と追加指示を送信し、作業中はPC側Queueへ登録
+- 指示の重複、期限、文字数、送信先PCをデスクトップ側で検証
+- USB実機テストを通信室から開始し、内蔵Relay、ADB転送、Android起動、自動接続までGUI操作へ統合
+- Pixel 9へのdebug APKインストール、USB接続での状態同期・指示送信テストを完了
+- 次段階として、USBを使わない無線接続、QRペアリング、端末鍵、通知機能の検証を開始
 
 ### V0.1.6 — 画面レイアウトの全面見直し
 

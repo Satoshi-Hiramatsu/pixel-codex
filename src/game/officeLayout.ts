@@ -21,6 +21,7 @@ export type ZoneKey =
   | 'research'
   | 'testlab'
   | 'lounge'
+  | 'communication'
   | 'approval';
 
 export interface Zone {
@@ -45,7 +46,8 @@ export const zones: Zone[] = [
   { key: 'accounting', label: '経理室', col: 1, row: 7, cols: 6, rows: 4, floor: 0xcfc0d4, accent: 0x6b4f86 },
   { key: 'research', label: '資料室', col: 8, row: 7, cols: 7, rows: 4, floor: 0xa9c79c, accent: 0x54804c },
   { key: 'testlab', label: 'テストラボ', col: 16, row: 7, cols: 8, rows: 4, floor: 0xa3aac6, accent: 0x56658f },
-  { key: 'lounge', label: '休憩スペース', col: 1, row: 12, cols: 13, rows: 2, floor: 0xe0c58c, accent: 0xa76a3a },
+  { key: 'lounge', label: '休憩スペース', col: 1, row: 12, cols: 6, rows: 2, floor: 0xe0c58c, accent: 0xa76a3a },
+  { key: 'communication', label: '通信室', col: 8, row: 12, cols: 6, rows: 2, floor: 0xa7cec6, accent: 0x2d7d73 },
   { key: 'approval', label: '承認カウンター', col: 15, row: 12, cols: 9, rows: 2, floor: 0xe3cf9a, accent: 0xb98130 },
 ];
 
@@ -148,8 +150,12 @@ export const furniture: Furniture[] = [
   { kind: 'sofa', col: 2, row: 12, cols: 2, rows: 1 },
   { kind: 'lowTable', col: 2, row: 13, cols: 2, rows: 1 },
   { kind: 'vendingMachine', col: 6, row: 12, cols: 1, rows: 2 },
-  { kind: 'progressBoard', col: 8, row: 12, cols: 2, rows: 2 },
-  { kind: 'plant', col: 10, row: 12, cols: 1, rows: 1 },
+
+  // 通信室
+  { kind: 'serverRack', col: 8, row: 12, cols: 1, rows: 2 },
+  { kind: 'desk', col: 10, row: 12, cols: 2, rows: 1, accent: 0x2d7d73 },
+  { kind: 'chair', col: 10, row: 13, cols: 1, rows: 1, accent: 0x2d7d73, facing: 'up' },
+  { kind: 'noticeBoard', col: 13, row: 12, cols: 1, rows: 1 },
 
   // 承認カウンター
   { kind: 'counter', col: 18, row: 12, cols: 3, rows: 1 },
@@ -190,10 +196,8 @@ const loungeSeats: Tile[] = [
   { col: 5, row: 13 },
   { col: 4, row: 13 },
   { col: 5, row: 12 },
-  { col: 7, row: 13 },
-  { col: 7, row: 12 },
-  { col: 11, row: 13 },
-  { col: 12, row: 13 },
+  { col: 1, row: 12 },
+  { col: 1, row: 13 },
 ];
 
 /** 退勤する社員が向かう玄関の内側。ここまで歩いたらフロアから消えます。 */
@@ -208,6 +212,7 @@ const dutyStations: Partial<Record<AgentDuty, Tile>> = {
   reviewer: { col: 12, row: 4 },
   designer: { col: 20, row: 3 },
   accountant: { col: 3, row: 9 },
+  communicator: { col: 10, row: 13 },
   writer: { col: 11, row: 9 },
 };
 

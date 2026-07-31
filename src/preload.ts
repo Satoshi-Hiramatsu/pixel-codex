@@ -1,8 +1,28 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
-import type { CodexEvent, PixelCodexApi } from './types';
+import type {
+  CodexEvent,
+  PixelCodexApi,
+  RemoteGatewayStatus,
+  RemoteInstruction,
+} from './types';
 
 const api: PixelCodexApi = {
   getAppInfo: () => ipcRenderer.invoke('app:info'),
+  getRemoteHostInfo: () => ipcRenderer.invoke('remote:host-info'),
+  configureRemoteGateway: (config) => ipcRenderer.invoke('remote:configure', config),
+  startUsbRemoteTest: () => ipcRenderer.invoke('remote:start-usb-test'),
+  updateRemoteState: (state) => ipcRenderer.invoke('remote:update-state', state),
+  acknowledgeRemoteInstruction: (result) => ipcRenderer.invoke('remote:acknowledge', result),
+  onRemoteStatus: (callback) => {
+    const listener = (_event: IpcRendererEvent, value: RemoteGatewayStatus) => callback(value);
+    ipcRenderer.on('remote:status', listener);
+    return () => ipcRenderer.removeListener('remote:status', listener);
+  },
+  onRemoteInstruction: (callback) => {
+    const listener = (_event: IpcRendererEvent, value: RemoteInstruction) => callback(value);
+    ipcRenderer.on('remote:instruction', listener);
+    return () => ipcRenderer.removeListener('remote:instruction', listener);
+  },
   chooseWorkspace: () => ipcRenderer.invoke('app:choose-workspace'),
   chooseCodexExecutable: () => ipcRenderer.invoke('app:choose-codex'),
   listWorkspaceDirectory: (workspace, relativePath = '') =>

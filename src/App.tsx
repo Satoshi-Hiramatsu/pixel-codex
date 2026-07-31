@@ -25,6 +25,13 @@ import {
 import { roomNameFor } from './game/officeLayout';
 import { PhaserCanvas } from './game/PhaserCanvas';
 import { effortOptions, modelLabel, modelOptions, resolveModelId } from './models';
+import {
+  formatCommunicationMessage,
+  loadCommunicationPolicy,
+  mergeCommunicationPolicy,
+  saveCommunicationPolicy,
+} from './remote/communicationPolicy';
+import type { CommunicationPolicyPatch } from './remote/communicationPolicy';
 import { SkillBook, useSkillBook } from './SkillBook';
 import { skillBriefing } from './skills/skillFile';
 import {
@@ -39,6 +46,8 @@ import type {
   Attachment,
   CodexProcessInfo,
   RateLimitWindow,
+  RemoteGatewayStatus,
+  RemoteInstruction,
   RepoStatus,
   RoadmapStep,
   SaveMeta,
@@ -71,6 +80,7 @@ const dutyLabels: Record<AgentState['duty'], string> = {
   reviewer: '企画会議室',
   designer: '開発室',
   accountant: '経理室',
+  communicator: '通信室',
   writer: '資料室',
   general: 'フロア',
 };
@@ -379,6 +389,16 @@ export function App(): React.JSX.Element {
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [blackboardOpen, setBlackboardOpen] = useState(false);
   const [payrollOpen, setPayrollOpen] = useState(false);
+  const [communicationOpen, setCommunicationOpen] = useState(false);
+  const [communicationPolicy, setCommunicationPolicy] = useState(loadCommunicationPolicy);
+  const [communicationNotice, setCommunicationNotice] = useState('');
+  const [usbTestBusy, setUsbTestBusy] = useState(false);
+  const [remoteHostId, setRemoteHostId] = useState('');
+  const [remoteStatus, setRemoteStatus] = useState<RemoteGatewayStatus>({
+    phase: 'disabled',
+    label: '通信停止中',
+  });
+  const [remoteQueue, setRemoteQueue] = useState<RemoteInstruction[]>([]);
   const [roadmapOpen, setRoadmapOpen] = useState(false);
   // 右カラムは4枚のタブを1枚ずつ出します。縦積みをやめたぶんフロア図に高さを回せます。
   const [sideTab, setSideTab] = useState<SideTab>('roster');
@@ -419,6 +439,8 @@ export function App(): React.JSX.Element {
   const autoOpenedReportId = useRef('');
   const autoOpenedAccountingId = useRef('');
   const initialWorkspace = useRef(recentWorkspaces[0]);
+  const remoteInstructionRunning = useRef(false);
+  const remoteQueueObservedWork = useRef(false);
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) ?? agents[0],
@@ -911,6 +933,53 @@ export function App(): React.JSX.Element {
     void openWorkspaceItem(entry.relativePath);
   }
 
+  function updateCommunicationPolicy(patch: CommunicationPolicyPatch): void {
+    setCommunicationPolicy((current) => {
+      const next = mergeCommunicationPolicy(current, patch);
+      saveCommunicationPolicy(next);
+      return next;
+    });
+    setCommunicationNotice('設定をこのPCに保存しました');
+  }
+
+  function validateCommunicationRelay(): void {
+    if (!communicationPolicy.relayUrl) {
+      setCommunicationNotice('Relay URLを入力してください');
+      return;
+    }
+
+    try {
+      const relayUrl = new URL(communicationPolicy.relayUrl);
+      const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(relayUrl.hostname);
+      if (relayUrl.protocol !== 'wss:'
+        && relayUrl.protocol !== 'https:'
+        && !(relayUrl.protocol === 'ws:' && loopback)) {
+        throw new Error('unsupported protocol');
+      }
+      setCommunicationNotice('URL形式は正常です。通信をONにするとRelayへ接続します');
+    } catch {
+      setCommunicationNotice('wss:// または https:// のRelay URLを指定してください');
+    }
+  }
+
+  async function startUsbRemoteTest(): Promise<void> {
+    setUsbTestBusy(true);
+    setCommunicationNotice('Pixel 9とのUSB通信を準備しています…');
+    try {
+      const session = await window.pixelCodex.startUsbRemoteTest();
+      updateCommunicationPolicy({
+        enabled: true,
+        relayUrl: session.relayUrl,
+        autoReconnect: true,
+      });
+      setCommunicationNotice(`USB接続済み：${session.deviceSerial}（Androidアプリを起動しました）`);
+    } catch (error) {
+      setCommunicationNotice(errorMessage(error));
+    } finally {
+      setUsbTestBusy(false);
+    }
+  }
+
   /**
    * 統括責任者への指示書。自分で手を動かさず、ロードマップを引いて
    * 担当者へ割り振るように、毎回のお願いに添えて送ります。
@@ -918,7 +987,9 @@ export function App(): React.JSX.Element {
   function directorBriefing(): string {
     const director = hiredProfiles.find((profile) => profile.duty === 'director');
     const team = hiredProfiles.filter(
-      (profile) => profile.duty !== 'director' && profile.duty !== 'accountant',
+      (profile) => profile.duty !== 'director'
+        && profile.duty !== 'accountant'
+        && profile.duty !== 'communicator',
     );
     const lines = [
       '',
@@ -1004,6 +1075,191 @@ export function App(): React.JSX.Element {
       setBusy(false);
     }
   }
+
+  function acknowledgeRemoteInstruction(
+    instruction: RemoteInstruction,
+    outcome: 'started' | 'queued' | 'rejected' | 'failed',
+    detail: string,
+  ): void {
+    void window.pixelCodex.acknowledgeRemoteInstruction({
+      messageId: instruction.messageId,
+      outcome,
+      detail,
+      time: Date.now(),
+    });
+  }
+
+  async function executeRemoteInstruction(instruction: RemoteInstruction): Promise<void> {
+    if (remoteInstructionRunning.current) return;
+    remoteInstructionRunning.current = true;
+    try {
+      if (!communicationPolicy.enabled || !communicationPolicy.allowRemoteInstructions) {
+        acknowledgeRemoteInstruction(instruction, 'rejected', 'PC側でスマートフォンからの指示が無効です');
+        return;
+      }
+      if (connection !== 'connected') {
+        acknowledgeRemoteInstruction(instruction, 'rejected', 'Codexが接続されていません');
+        return;
+      }
+      if (!workspace) {
+        acknowledgeRemoteInstruction(instruction, 'rejected', 'PCで作業フォルダを選択してください');
+        return;
+      }
+
+      let threadId = rootThreadId;
+      if (!threadId) {
+        const result = await window.pixelCodex.startThread(workspace, {
+          model: resolveModelId(modelSettings),
+          effort: modelSettings.effort,
+        });
+        threadId = result.threadId;
+        setRootThread(threadId);
+      }
+
+      const request = instruction.text.trim();
+      startProject(request.split(/\r?\n/)[0].slice(0, 40));
+      await window.pixelCodex.sendTask(threadId, `${request}${directorBriefing()}`);
+      addMessage({ agentId: threadId, role: 'user', text: request });
+      addLog('通信担当がAndroidからの指示を統括責任者へ渡しました', 'success', threadId);
+      setCommunicationNotice('Androidからの指示をCodexへ送信しました');
+      acknowledgeRemoteInstruction(instruction, 'started', 'Codexが指示を受け付けました');
+    } catch (error) {
+      const detail = errorMessage(error);
+      addLog(`Androidからの指示を送信できませんでした：${detail}`, 'error');
+      setCommunicationNotice(detail);
+      acknowledgeRemoteInstruction(instruction, 'failed', detail);
+    } finally {
+      remoteInstructionRunning.current = false;
+    }
+  }
+
+  function receiveRemoteInstruction(instruction: RemoteInstruction): void {
+    if (!communicationPolicy.enabled || !communicationPolicy.allowRemoteInstructions) {
+      acknowledgeRemoteInstruction(instruction, 'rejected', 'PC側でスマートフォンからの指示が無効です');
+      return;
+    }
+    if (connection !== 'connected' || !workspace) {
+      const detail = connection !== 'connected'
+        ? 'Codexが接続されていません'
+        : 'PCで作業フォルダを選択してください';
+      acknowledgeRemoteInstruction(instruction, 'rejected', detail);
+      return;
+    }
+
+    const rootIsWorking = rootAgent
+      ? !['idle', 'done', 'error'].includes(rootAgent.status)
+      : false;
+    if (rootIsWorking || remoteInstructionRunning.current) {
+      if (remoteQueue.length >= 20) {
+        acknowledgeRemoteInstruction(instruction, 'rejected', '遠隔指示の待ち行列が上限に達しています');
+        return;
+      }
+      remoteQueueObservedWork.current = rootIsWorking;
+      setRemoteQueue((current) => [...current, instruction]);
+      addLog('Androidからの追加指示を待ち行列へ登録しました', 'info', rootThreadId);
+      setCommunicationNotice('Androidからの追加指示を待ち行列へ登録しました');
+      acknowledgeRemoteInstruction(instruction, 'queued', '現在の作業が終わり次第実行します');
+      return;
+    }
+    void executeRemoteInstruction(instruction);
+  }
+
+  useEffect(() => window.pixelCodex.onRemoteStatus(setRemoteStatus), []);
+
+  useEffect(() => {
+    window.pixelCodex
+      .getRemoteHostInfo()
+      .then((info) => {
+        setRemoteHostId(info.hostId);
+        setRemoteStatus(info.status);
+      })
+      .catch((error) => setCommunicationNotice(errorMessage(error)));
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      window.pixelCodex.configureRemoteGateway({
+        enabled: communicationPolicy.enabled,
+        relayUrl: communicationPolicy.relayUrl,
+        autoReconnect: communicationPolicy.autoReconnect,
+      }).then(setRemoteStatus).catch((error) => {
+        setRemoteStatus({ phase: 'error', label: 'Gateway設定エラー', error: errorMessage(error) });
+      });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [
+    communicationPolicy.enabled,
+    communicationPolicy.relayUrl,
+    communicationPolicy.autoReconnect,
+  ]);
+
+  useEffect(
+    () => window.pixelCodex.onRemoteInstruction(receiveRemoteInstruction),
+    [
+      communicationPolicy.enabled,
+      communicationPolicy.allowRemoteInstructions,
+      connection,
+      workspace,
+      rootThreadId,
+      rootAgent?.status,
+      remoteQueue.length,
+      modelSettings.modelId,
+      modelSettings.customModelId,
+      modelSettings.effort,
+    ],
+  );
+
+  useEffect(() => {
+    const latestMessage = formatCommunicationMessage(
+      messages[messages.length - 1]?.text,
+      communicationPolicy,
+    );
+    void window.pixelCodex.updateRemoteState({
+      workspace,
+      connection,
+      connectionLabel,
+      rootThreadId,
+      rootStatus: rootAgent?.status,
+      rootName: rootAgent?.name,
+      busy: Boolean(rootAgent && !['idle', 'done', 'error'].includes(rootAgent.status)),
+      pendingInstructions: remoteQueue.length,
+      approvalPending: Boolean(approval),
+      questionPending: Boolean(questionRequest),
+      latestMessage,
+      updatedAt: Date.now(),
+    });
+  }, [
+    workspace,
+    connection,
+    connectionLabel,
+    rootThreadId,
+    rootAgent?.status,
+    rootAgent?.name,
+    remoteQueue.length,
+    approval,
+    questionRequest,
+    messages,
+    communicationPolicy.contentLevel,
+    communicationPolicy.hideSensitiveDetails,
+  ]);
+
+  useEffect(() => {
+    if (!remoteQueue.length || remoteInstructionRunning.current) return;
+    const rootIsWorking = rootAgent
+      ? !['idle', 'done', 'error'].includes(rootAgent.status)
+      : false;
+    if (rootIsWorking) {
+      remoteQueueObservedWork.current = true;
+      return;
+    }
+    // A queued instruction must observe the current turn running and then becoming idle.
+    // This prevents two commands arriving together from starting two turns at once.
+    if (!remoteQueueObservedWork.current) return;
+    remoteQueueObservedWork.current = false;
+    const next = remoteQueue[0];
+    setRemoteQueue((current) => current.slice(1));
+    void executeRemoteInstruction(next);
+  }, [remoteQueue, rootAgent?.status, connection, workspace]);
 
   /**
    * ひとつのスレッドへ文章を届けます。作業中なら割り込み（steer）、手が空いていれば
@@ -1400,6 +1656,15 @@ export function App(): React.JSX.Element {
           >
             <span>成果物</span>
             <strong>{deliverables.length}</strong>
+          </button>
+          <button
+            className={`communication-button ${communicationPolicy.enabled ? 'enabled' : ''}`}
+            type="button"
+            title="Android連携の通信・通知設定"
+            onClick={() => setCommunicationOpen(true)}
+          >
+            <span>通信室</span>
+            <strong>{remoteStatus.phase === 'connected' ? 'LIVE' : communicationPolicy.enabled ? 'ON' : 'OFF'}</strong>
           </button>
           <button
             className={`report-button ${accountingReports.length ? 'has-results' : ''}`}
@@ -1860,6 +2125,162 @@ export function App(): React.JSX.Element {
       </section>
 
       <footer><span>PIXEL CODEX STUDIO v{appVersion}</span><span>社員を雇用して、開発チームを育てよう</span></footer>
+
+      {communicationOpen && (
+        <div
+          className="communication-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCommunicationOpen(false);
+          }}
+        >
+          <section
+            className="communication-window"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="communication-title"
+          >
+            <header className="game-window-titlebar">
+              <div className="title-icon">通</div>
+              <div>
+                <span>ANDROID COMMUNICATION</span>
+                <h2 id="communication-title">通信室・モバイル連携設定</h2>
+              </div>
+              <button type="button" aria-label="通信室を閉じる" onClick={() => setCommunicationOpen(false)}>×</button>
+            </header>
+
+            <div className="communication-body">
+              <section className="communication-status-card">
+                <div>
+                  <span className={`communication-lamp ${remoteStatus.phase}`} />
+                  <div>
+                    <small>GATEWAY STATUS</small>
+                    <strong>{remoteStatus.label}</strong>
+                  </div>
+                </div>
+                <label className="communication-toggle">
+                  <input
+                    type="checkbox"
+                    checked={communicationPolicy.enabled}
+                    onChange={(event) => updateCommunicationPolicy({ enabled: event.target.checked })}
+                  />
+                  <span>Android連携を有効にする</span>
+                </label>
+              </section>
+
+              <div className="communication-grid">
+                <section className="communication-card">
+                  <header><span>01</span><h3>ネットワーク</h3></header>
+                  <label className="communication-field">
+                    <span>Relay URL</span>
+                    <input
+                      type="url"
+                      value={communicationPolicy.relayUrl}
+                      placeholder="wss://relay.example.com/device"
+                      onChange={(event) => updateCommunicationPolicy({ relayUrl: event.target.value })}
+                    />
+                  </label>
+                  <label className="communication-check">
+                    <input
+                      type="checkbox"
+                      checked={communicationPolicy.autoReconnect}
+                      onChange={(event) => updateCommunicationPolicy({ autoReconnect: event.target.checked })}
+                    />
+                    切断時に自動で再接続する
+                  </label>
+                  <div className="communication-test-actions">
+                    <button className="communication-test-button" type="button" onClick={validateCommunicationRelay}>
+                      接続設定を確認
+                    </button>
+                    <button
+                      className="communication-test-button usb"
+                      type="button"
+                      disabled={usbTestBusy}
+                      onClick={() => void startUsbRemoteTest()}
+                    >
+                      {usbTestBusy ? 'USB接続を準備中…' : 'USB実機テストを開始'}
+                    </button>
+                  </div>
+                  <p>{remoteStatus.error ?? 'URLと方針だけをこのPCに保存します。認証情報は保存しません。'}</p>
+                </section>
+
+                <section className="communication-card">
+                  <header><span>02</span><h3>スマートフォンからの指示</h3></header>
+                  <label className="communication-check important">
+                    <input
+                      type="checkbox"
+                      checked={communicationPolicy.allowRemoteInstructions}
+                      onChange={(event) => updateCommunicationPolicy({ allowRemoteInstructions: event.target.checked })}
+                    />
+                    新規指示・追加指示を受け付ける
+                  </label>
+                  <div className="communication-rule">
+                    <b>新規指示</b><span>PCで選択中の作業フォルダに新しいスレッドを開始</span>
+                    <b>追加指示</b><span>実行中なら待ち行列へ、待機中ならすぐ送信</span>
+                  </div>
+                  <aside>承認操作と質問への回答は初期版ではPC側で行います。</aside>
+                </section>
+
+                <section className="communication-card">
+                  <header><span>03</span><h3>通知するタイミング</h3></header>
+                  {([
+                    ['turnCompleted', '作業が完了したとき'],
+                    ['approvalRequested', '承認が必要になったとき'],
+                    ['questionRequested', '質問への回答が必要なとき'],
+                    ['errorOccurred', 'エラーが発生したとき'],
+                  ] as const).map(([key, label]) => (
+                    <label className="communication-check" key={key}>
+                      <input
+                        type="checkbox"
+                        checked={communicationPolicy.events[key]}
+                        onChange={(event) => updateCommunicationPolicy({
+                          events: { [key]: event.target.checked },
+                        })}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </section>
+
+                <section className="communication-card">
+                  <header><span>04</span><h3>送信する内容</h3></header>
+                  <label className="communication-field">
+                    <span>通知の詳しさ</span>
+                    <select
+                      value={communicationPolicy.contentLevel}
+                      onChange={(event) => updateCommunicationPolicy({
+                        contentLevel: event.target.value as typeof communicationPolicy.contentLevel,
+                      })}
+                    >
+                      <option value="status-only">状態だけ</option>
+                      <option value="summary">短い要約</option>
+                      <option value="final-message">最終報告を含める</option>
+                    </select>
+                  </label>
+                  <label className="communication-check">
+                    <input
+                      type="checkbox"
+                      checked={communicationPolicy.hideSensitiveDetails}
+                      onChange={(event) => updateCommunicationPolicy({ hideSensitiveDetails: event.target.checked })}
+                    />
+                    ファイルパスや機密らしい内容を通知から隠す
+                  </label>
+                  <div className="communication-device">
+                    <span>HOST ID</span>
+                    <strong>{remoteHostId || '初期化中'}</strong>
+                    <small>待機中の遠隔指示 {remoteQueue.length}件・端末ペアリングは次の実装段階です</small>
+                  </div>
+                </section>
+              </div>
+
+              <footer className="communication-footer">
+                <span>{communicationNotice || '通信担当が設定変更を待っています'}</span>
+                <button type="button" onClick={() => setCommunicationOpen(false)}>閉じる</button>
+              </footer>
+            </div>
+          </section>
+        </div>
+      )}
 
       {staffOpen && (
         <div
