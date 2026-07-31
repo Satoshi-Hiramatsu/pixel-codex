@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>spriteforge — Pixel Codex キャラシート変換</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 18px 22px 60px;
+    background: #efe3c4; color: #302c24;
+    font: 12px/1.7 "MS Gothic", Consolas, monospace;
+  }
+  h1 { margin: 0 0 4px; font-size: 15px; letter-spacing: .08em; }
+  h2 { margin: 22px 0 8px; padding-bottom: 4px; font-size: 12px; letter-spacing: .08em; border-bottom: 2px solid #c4b078; }
+  p.lead { margin: 0 0 14px; color: #6f5c38; font-size: 11px; }
+  .layout { display: flex; flex-wrap: wrap; gap: 26px; align-items: flex-start; }
+  .col { min-width: 300px; }
+
+  /* --- コマのグリッド --- */
+  .grid { display: grid; grid-template-columns: 56px repeat(3, 96px); gap: 6px; align-items: center; }
+  .grid .head { color: #8a7346; font-size: 10px; text-align: center; }
+  .grid .rowlabel { color: #6f5c38; font-size: 11px; }
+  .cell {
+    position: relative; width: 96px; height: 96px;
+    border: 2px dashed #b9a273; background: #f7efd9;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; overflow: hidden;
+  }
+  .cell.filled { border-style: solid; border-color: #4c889e; background: #fffaf0; }
+  .cell.required:not(.filled) { border-color: #c07a3a; }
+  .cell.dragover { background: #d9edf5; border-color: #246487; }
+  .cell canvas { width: 96px; height: 96px; }
+  .cell .hint { position: absolute; color: #a08e66; font-size: 10px; pointer-events: none; text-align: center; }
+  .cell.filled .hint { display: none; }
+  .cell .clear {
+    position: absolute; top: 2px; right: 2px; z-index: 2;
+    padding: 0 4px; border: 1px solid #8a7346; background: #fff;
+    color: #8a4a2a; font: 10px monospace; cursor: pointer; display: none;
+  }
+  .cell.filled .clear { display: block; }
+
+  /* --- 設定 --- */
+  .field { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .field label { width: 152px; color: #6f5c38; }
+  .field input[type=range] { width: 130px; }
+  .field output { width: 42px; color: #246487; text-align: right; }
+  .field input[type=number] { width: 62px; }
+  .note { margin: 6px 0 0; color: #8a7346; font-size: 10px; }
+
+  /* --- プレビュー --- */
+  .preview { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+  .anim { text-align: center; }
+  .anim canvas { width: 128px; height: 128px; image-rendering: pixelated; border: 2px solid #c4b078; background: #46707d; display: block; }
+  .anim span { color: #6f5c38; font-size: 10px; }
+  #sheetPreview { image-rendering: pixelated; border: 2px solid #c4b078; background: #46707d; width: 384px; height: 512px; }
+
+  /* --- パレット --- */
+  #palette { display: grid; grid-template-columns: repeat(auto-fill, 120px); gap: 5px; }
+  .swatch { display: flex; align-items: center; gap: 6px; padding: 3px 5px; border: 1px solid #c4b078; background: #f7efd9; cursor: pointer; }
+  .swatch.on { border-color: #246487; background: #d9edf5; }
+  .swatch i { width: 18px; height: 18px; border: 1px solid #55492f; display: block; }
+  .swatch code { font-size: 10px; }
+
+  button.action {
+    padding: 7px 16px; border: 2px solid #55492f; background: #c4b078;
+    color: #302c24; font: 700 12px monospace; cursor: pointer;
+  }
+  button.action:disabled { opacity: .45; cursor: default; }
+  #status { margin-left: 12px; color: #8a4a2a; }
+</style>
+</head>
+<body>
+
+<h1>spriteforge — Pixel Codex キャラシート変換</h1>
+<p class="lead">
+  画像生成AIで描いた 4方向の立ち絵を、そのまま使える 192×256 のドット絵シートに焼き直します。<br>
+  仕上がりは <code>src/assets/agentSheet.ts</code> として書き出されるので、中身を丸ごと差し替えてください。
+</p>
+
+<div class="layout">
+  <div class="col">
+    <h2>1. 立ち絵を入れる</h2>
+    <div class="grid" id="grid"></div>
+    <p class="note">
+      左の列（直立）だけが必須です。右の 2列は歩行コマとして自動生成しますが、<br>
+      自分で描いた画像を落とせばそちらが優先されます。
+    </p>
+  </div>
+
+  <div class="col">
+    <h2>2. 整える</h2>
+
+    <div class="field">
+      <label>背景の抜き方</label>
+      <select id="bgMode">
+        <option value="key">カラーキー（単色背景）</option>
+        <option value="alpha">すでに透過ずみ</option>
+      </select>
+    </div>
+    <div class="field" data-when="key">
+      <label>キーの色</label>
+      <input type="color" id="keyColor" value="#ff00ff">
+      <input type="number" id="keyTol" min="0" max="200" value="70" step="5">
+      <span style="color:#8a7346">許容差</span>
+    </div>
+
+    <div class="field">
+      <label>キャラの高さ(px)</label>
+      <input type="range" id="bodyHeight" min="24" max="60" value="56">
+      <output id="bodyHeightOut"></output>
+    </div>
+    <div class="field">
+      <label>足元のすきま(px)</label>
+      <input type="range" id="footMargin" min="0" max="12" value="4">
+      <output id="footMarginOut"></output>
+    </div>
+    <div class="field">
+      <label>色数</label>
+      <input type="range" id="colors" min="4" max="24" value="12">
+      <output id="colorsOut"></output>
+    </div>
+
+    <div class="field">
+      <label>歩幅(px)</label>
+      <input type="range" id="stride" min="0" max="5" value="2">
+      <output id="strideOut"></output>
+    </div>
+    <div class="field">
+      <label>脚とみなす下部(%)</label>
+      <input type="range" id="legBand" min="10" max="60" value="35">
+      <output id="legBandOut"></output>
+    </div>
+    <div class="field">
+      <label>上下のゆれ(px)</label>
+      <input type="range" id="bob" min="0" max="3" value="1">
+      <output id="bobOut"></output>
+    </div>
+    <p class="note">
+      フロアのタイルは 40px です。キャラの高さ 56px あたりが、足元が 1マスに収まって<br>
+      頭が上のマスへはみ出す MOTHER2 らしい比率になります。
+    </p>
+  </div>
+</div>
+
+<h2>3. 服として塗り替える色をえらぶ</h2>
+<div id="palette"></div>
+<p class="note">
+  ここで選んだ色が、社員ごとの服の色に差し替わります。白〜グレーの明暗をひととおり選んでください。<br>
+  肌や髪を選ぶと、そこまで社員の色になってしまいます。
+</p>
+
+<h2>4. できあがり</h2>
+<div class="preview">
+  <div><canvas id="sheetPreview" width="192" height="256"></canvas></div>
+  <div class="preview" id="anims"></div>
+</div>
+
+<h2>5. 書き出す</h2>
+<button class="action" id="export" disabled>agentSheet.ts をダウンロード</button>
+<button class="action" id="exportPng" disabled>シートを PNG で保存</button>
+<span id="status"></span>
+
+<script>
+(function () {
+  'use strict';
+
+  var FRAME = 64;
+  var COLS = 3;
+  var FACINGS = ['down', 'left', 'right', 'up'];
+  var FACING_LABEL = { down: '正面 down', left: '左 left', right: '右 right', up: '背面 up' };
+  var COL_LABEL = ['0 直立（必須）', '1 右足前', '2 左足前'];
+  var SHEET_W = FRAME * COLS;
+  var SHEET_H = FRAME * FACINGS.length;
+  var WALK_ORDER = [1, 0, 2, 0];
+
+  /** key `${facing}-${col}` -> HTMLImageElement */
+  var sources = {};
+  /** 直近の量子化結果。パレットの役割UIとエクスポートが使います。 */
+  var latest = { palette: [], frames: null };
+  var shirtFlags = [];
+
+  // -------------------------------------------------------------- 画像の下ごしらえ
+
+  function readOptions() {
+    return {
+      bgMode: document.getElementById('bgMode').value,
+      keyColor: hexToRgb(document.getElementById('keyColor').value),
+      keyTol: Number(document.getElementById('keyTol').value),
+      bodyHeight: Number(document.getElementById('bodyHeight').value),
+      footMargin: Number(document.getElementById('footMargin').value),
+      colors: Number(document.getElementById('colors').value),
+      stride: Number(document.getElementById('stride').value),
+      legBand: Number(document.getElementById('legBand').value) / 100,
+      bob: Number(document.getElementById('bob').value)
+    };
+  }
+
+  function hexToRgb(hex) {
+    var n = parseInt(hex.replace('#', ''), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  function rgbToHex(r, g, b) {
+    return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+  }
+
+  /** 背景を透明にします。カラーキーは色の距離で判定します。 */
+  function keyOut(data, opts) {
+    var d = data.data;
+    var kr = opts.keyColor[0], kg = opts.keyColor[1], kb = opts.keyColor[2];
+    var tol2 = opts.keyTol * opts.keyTol;
+    for (var i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 128) { d[i + 3] = 0; continue; }
+      if (opts.bgMode === 'key') {
+        var dr = d[i] - kr, dg = d[i + 1] - kg, db = d[i + 2] - kb;
+        if (dr * dr + dg * dg + db * db <= tol2) { d[i + 3] = 0; continue; }
+      }
+      d[i + 3] = 255;
+    }
+  }
+
+  /** 不透明な部分の外接矩形。 */
+  function bbox(data) {
+    var w = data.width, h = data.height, d = data.data;
+    var minX = w, minY = h, maxX = -1, maxY = -1;
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        if (d[(y * w + x) * 4 + 3] === 0) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < 0) return null;
+    return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+  }
+
+  /**
+   * 1枚の画像を 64×64 のコマに収めます。
+   * 背景を抜いて外接矩形を取り、指定の高さへ縮めて水平中央・足元そろえで置きます。
+   * 4方向で身長や位置がバラつくAI出力を、ここで吸収します。
+   */
+  function prepareCell(image, opts) {
+    var w = image.naturalWidth, h = image.naturalHeight;
+    if (!w || !h) return null;
+    var src = document.createElement('canvas');
+    src.width = w; src.height = h;
+    var sctx = src.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(image, 0, 0);
+    var data = sctx.getImageData(0, 0, w, h);
+    keyOut(data, opts);
+    var bb = bbox(data);
+    if (!bb) return null;
+    sctx.putImageData(data, 0, 0);
+
+    var maxHeight = FRAME - opts.footMargin;
+    var targetH = Math.min(opts.bodyHeight, maxHeight);
+    var scale = targetH / bb.h;
+    var dw = Math.max(1, Math.min(FRAME, Math.round(bb.w * scale)));
+    var dh = Math.max(1, Math.round(bb.h * scale));
+
+    var out = document.createElement('canvas');
+    out.width = FRAME; out.height = FRAME;
+    var octx = out.getContext('2d', { willReadFrequently: true });
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
+    octx.drawImage(
+      src, bb.x, bb.y, bb.w, bb.h,
+      Math.round((FRAME - dw) / 2), FRAME - opts.footMargin - dh, dw, dh
+    );
+    return octx.getImageData(0, 0, FRAME, FRAME);
+  }
+
+  // -------------------------------------------------------------- 減色
+
+  function medianCut(pixels, k) {
+    if (!pixels.length) return [[255, 255, 255]];
+    var boxes = [pixels];
+    while (boxes.length < k) {
+      var target = -1, widest = -1, axis = 0;
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].length < 2) continue;
+        var r = spread(boxes[i]);
+        if (r.span > widest) { widest = r.span; target = i; axis = r.channel; }
+      }
+      if (target < 0 || widest <= 0) break;
+      var box = boxes[target];
+      box.sort(function (p, q) { return p[axis] - q[axis]; });
+      var mid = box.length >> 1;
+      boxes.splice(target, 1, box.slice(0, mid), box.slice(mid));
+    }
+    return boxes.filter(function (b) { return b.length; }).map(average);
+  }
+
+  function spread(box) {
+    var lo = [255, 255, 255], hi = [0, 0, 0];
+    for (var i = 0; i < box.length; i++) {
+      for (var c = 0; c < 3; c++) {
+        if (box[i][c] < lo[c]) lo[c] = box[i][c];
+        if (box[i][c] > hi[c]) hi[c] = box[i][c];
+      }
+    }
+    var best = 0, span = -1;
+    for (var c2 = 0; c2 < 3; c2++) {
+      if (hi[c2] - lo[c2] > span) { span = hi[c2] - lo[c2]; best = c2; }
+    }
+    return { channel: best, span: span };
+  }
+
+  function average(box) {
+    var r = 0, g = 0, b = 0;
+    for (var i = 0; i < box.length; i++) { r += box[i][0]; g += box[i][1]; b += box[i][2]; }
+    return [Math.round(r / box.length), Math.round(g / box.length), Math.round(b / box.length)];
+  }
+
+  /** パレットへ寄せます。同じ色の問い合わせは覚えておいて使い回します。 */
+  function quantize(data, palette, cache) {
+    var d = data.data;
+    for (var i = 0; i < d.length; i += 4) {
+      if (d[i + 3] === 0) { d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; continue; }
+      var key = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+      var hit = cache.get(key);
+      if (hit === undefined) {
+        hit = nearest(palette, d[i], d[i + 1], d[i + 2]);
+        cache.set(key, hit);
+      }
+      d[i] = palette[hit][0]; d[i + 1] = palette[hit][1]; d[i + 2] = palette[hit][2];
+      d[i + 3] = 255;
+    }
+  }
+
+  function nearest(palette, r, g, b) {
+    var best = 0, bestDist = Infinity;
+    for (var i = 0; i < palette.length; i++) {
+      var dr = palette[i][0] - r, dg = palette[i][1] - g, db = palette[i][2] - b;
+      var dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) { bestDist = dist; best = i; }
+    }
+    return best;
+  }
+
+  // -------------------------------------------------------------- 歩行コマ
+
+  /**
+   * 矩形のなかだけで中身をずらします。はみ出したぶんは捨てるので、
+   * 「脚を持ち上げる」＝脚が短くなる、という手描きのドット絵と同じ動きになります。
+   */
+  function shiftRegion(img, x0, y0, x1, y1, dx, dy) {
+    var w = img.width;
+    var src = new Uint8ClampedArray(img.data);
+    var d = img.data;
+    var x, y, i;
+    for (y = y0; y < y1; y++) {
+      for (x = x0; x < x1; x++) {
+        i = (y * w + x) * 4;
+        d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
+      }
+    }
+    for (y = y0; y < y1; y++) {
+      for (x = x0; x < x1; x++) {
+        var ny = y + dy, nx = x + dx;
+        if (ny < y0 || ny >= y1 || nx < x0 || nx >= x1) continue;
+        var s = (y * w + x) * 4, t = (ny * w + nx) * 4;
+        d[t] = src[s]; d[t + 1] = src[s + 1]; d[t + 2] = src[s + 2]; d[t + 3] = src[s + 3];
+      }
+    }
+  }
+
+  function copyFrame(data) {
+    return new ImageData(new Uint8ClampedArray(data.data), data.width, data.height);
+  }
+
+  /**
+   * 直立コマ 1枚から、右足前 / 左足前を作ります。
+   * よこ向きは脚のかたまりを前後にずらし、正面・背面は左右の脚を交互に持ち上げます。
+   */
+  function makeWalkFrame(base, facing, phase, opts) {
+    var out = copyFrame(base);
+    var bb = bbox(base);
+    if (!bb || opts.stride === 0) {
+      if (opts.bob) shiftRegion(out, 0, 0, FRAME, FRAME, 0, -opts.bob);
+      return out;
+    }
+    var bandTop = Math.round(bb.y + bb.h * (1 - opts.legBand));
+    var bandBottom = bb.y + bb.h;
+
+    if (facing === 'left' || facing === 'right') {
+      var forward = facing === 'right' ? 1 : -1;
+      var dx = forward * opts.stride * (phase === 1 ? 1 : -1);
+      shiftRegion(out, bb.x, bandTop, bb.x + bb.w, bandBottom, dx, 0);
+    } else {
+      var midX = Math.round(bb.x + bb.w / 2);
+      if (phase === 1) shiftRegion(out, bb.x, bandTop, midX, bandBottom, 0, -opts.stride);
+      else shiftRegion(out, midX, bandTop, bb.x + bb.w, bandBottom, 0, -opts.stride);
+    }
+    if (opts.bob) shiftRegion(out, 0, 0, FRAME, FRAME, 0, -opts.bob);
+    return out;
+  }
+
+  // -------------------------------------------------------------- 組み立て
+
+  function rebuild() {
+    var opts = readOptions();
+    var status = document.getElementById('status');
+
+    function bail(message) {
+      latest.frames = null;
+      renderPalette([]);
+      drawSheet(null);
+      setEnabled(false);
+      status.textContent = message;
+    }
+
+    var missing = FACINGS.filter(function (f) { return !sources[f + '-0']; });
+    if (missing.length) {
+      bail('直立コマが足りません（' +
+        missing.map(function (f) { return FACING_LABEL[f]; }).join(' / ') + '）');
+      return;
+    }
+    status.textContent = '';
+
+    // 4方向でパレットを共有したいので、まず全部を並べてから減色します。
+    var prepared = {};
+    var samples = [];
+    var f, c, key, cell;
+    for (var i = 0; i < FACINGS.length; i++) {
+      f = FACINGS[i];
+      for (c = 0; c < COLS; c++) {
+        key = f + '-' + c;
+        if (!sources[key]) continue;
+        cell = prepareCell(sources[key], opts);
+        if (!cell) continue;
+        prepared[key] = cell;
+        var d = cell.data;
+        for (var p = 0; p < d.length; p += 4) {
+          if (d[p + 3] === 0) continue;
+          samples.push([d[p], d[p + 1], d[p + 2]]);
+        }
+      }
+    }
+
+    // 背景を抜いた結果、キャラが 1ドットも残らなかったコマがないか確かめます。
+    var blank = FACINGS.filter(function (f) { return !prepared[f + '-0']; });
+    if (blank.length) {
+      bail('背景を抜いたら中身が消えました（' +
+        blank.map(function (f) { return FACING_LABEL[f]; }).join(' / ') +
+        '）。キーの色か許容差を見直してください。');
+      return;
+    }
+
+    var palette = medianCut(samples, opts.colors);
+    palette.sort(function (a, b) { return luminance(b) - luminance(a); });
+    var cache = new Map();
+    Object.keys(prepared).forEach(function (k) { quantize(prepared[k], palette, cache); });
+
+    // 用意されていないコマを、直立コマから作ります。
+    var frames = {};
+    for (var j = 0; j < FACINGS.length; j++) {
+      f = FACINGS[j];
+      frames[f] = [prepared[f + '-0']];
+      for (c = 1; c < COLS; c++) {
+        frames[f][c] = prepared[f + '-' + c] || makeWalkFrame(prepared[f + '-0'], f, c, opts);
+      }
+    }
+
+    if (!samePalette(latest.palette, palette)) {
+      shirtFlags = palette.map(isProbablyShirt);
+    }
+    latest.palette = palette;
+    latest.frames = frames;
+
+    renderPalette(palette);
+    drawSheet(frames);
+    setEnabled(true);
+  }
+
+  function samePalette(a, b) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i][0] !== b[i][0] || a[i][1] !== b[i][1] || a[i][2] !== b[i][2]) return false;
+    }
+    return true;
+  }
+
+  function luminance(c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; }
+
+  /** 白〜グレーの明るめの色を、服の候補として最初から選んでおきます。 */
+  function isProbablyShirt(c) {
+    var mx = Math.max(c[0], c[1], c[2]);
+    var mn = Math.min(c[0], c[1], c[2]);
+    var sat = mx === 0 ? 0 : (mx - mn) / mx;
+    return sat < 0.14 && mx > 90;
+  }
+
+  function setEnabled(on) {
+    document.getElementById('export').disabled = !on;
+    document.getElementById('exportPng').disabled = !on;
+  }
+
+  // -------------------------------------------------------------- 描画
+
+  function buildSheetCanvas(frames) {
+    var canvas = document.createElement('canvas');
+    canvas.width = SHEET_W; canvas.height = SHEET_H;
+    var ctx = canvas.getContext('2d');
+    FACINGS.forEach(function (f, row) {
+      for (var c = 0; c < COLS; c++) {
+        ctx.putImageData(frames[f][c], c * FRAME, row * FRAME);
+      }
+    });
+    return canvas;
+  }
+
+  function drawSheet(frames) {
+    var preview = document.getElementById('sheetPreview');
+    var ctx = preview.getContext('2d');
+    ctx.clearRect(0, 0, SHEET_W, SHEET_H);
+    if (frames) ctx.drawImage(buildSheetCanvas(frames), 0, 0);
+    drawAnims(frames);
+  }
+
+  var animCanvases = null;
+  var animStep = 0;
+
+  function drawAnims(frames) {
+    if (!animCanvases) {
+      var host = document.getElementById('anims');
+      animCanvases = {};
+      FACINGS.forEach(function (f) {
+        var wrap = document.createElement('div');
+        wrap.className = 'anim';
+        var canvas = document.createElement('canvas');
+        canvas.width = FRAME; canvas.height = FRAME;
+        var label = document.createElement('span');
+        label.textContent = FACING_LABEL[f];
+        wrap.appendChild(canvas);
+        wrap.appendChild(label);
+        host.appendChild(wrap);
+        animCanvases[f] = canvas;
+      });
+      setInterval(tick, 1000 / 7);
+    }
+    tick();
+  }
+
+  function tick() {
+    if (!animCanvases) return;
+    animStep = (animStep + 1) % WALK_ORDER.length;
+    FACINGS.forEach(function (f) {
+      var ctx = animCanvases[f].getContext('2d');
+      ctx.clearRect(0, 0, FRAME, FRAME);
+      if (latest.frames) ctx.putImageData(latest.frames[f][WALK_ORDER[animStep]], 0, 0);
+    });
+  }
+
+  function renderPalette(palette) {
+    var host = document.getElementById('palette');
+    host.innerHTML = '';
+    palette.forEach(function (c, index) {
+      var hex = rgbToHex(c[0], c[1], c[2]);
+      var item = document.createElement('div');
+      item.className = 'swatch' + (shirtFlags[index] ? ' on' : '');
+      item.innerHTML = '<i style="background:' + hex + '"></i><code>' + hex + '</code>';
+      item.title = shirtFlags[index] ? '服として塗り替えます' : 'そのままの色で使います';
+      item.addEventListener('click', function () {
+        shirtFlags[index] = !shirtFlags[index];
+        renderPalette(latest.palette);
+      });
+      host.appendChild(item);
+    });
+  }
+
+  // -------------------------------------------------------------- 書き出し
+
+  function shirtColors() {
+    return latest.palette
+      .filter(function (_, i) { return shirtFlags[i]; })
+      .sort(function (a, b) { return luminance(b) - luminance(a); })
+      .map(function (c) { return rgbToHex(c[0], c[1], c[2]); });
+  }
+
+  function buildModule() {
+    var url = buildSheetCanvas(latest.frames).toDataURL('image/png');
+    var shirt = shirtColors();
+    return [
+      '/**',
+      ' * 社員キャラのドット絵シート。',
+      ' *',
+      ' * このファイルは tools/spriteforge.html が書き出したものです。',
+      ' * 絵を描き替えたら、ツールに読み込ませて丸ごと差し替えてください。',
+      ' * 手で編集する必要はありません。',
+      ' */',
+      '',
+      '/** シートの中で「塗り替えてよい色」の定義。 */',
+      'export interface SheetPalette {',
+      '  /** 服として社員の色に塗り替える色。**明るい順**にならべます。 */',
+      '  shirt: string[];',
+      '}',
+      '',
+      '/** 192×256（64px × 3列 × 4行）のドット絵シート。 */',
+      "export const AGENT_SHEET_PNG: string | null =\n  '" + url + "';",
+      '',
+      'export const AGENT_SHEET_PALETTE: SheetPalette = {',
+      '  shirt: [' + shirt.map(function (h) { return "'" + h + "'"; }).join(', ') + '],',
+      '};',
+      ''
+    ].join('\n');
+  }
+
+  function download(name, blob) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  document.getElementById('export').addEventListener('click', function () {
+    if (!latest.frames) return;
+    if (!shirtColors().length) {
+      document.getElementById('status').textContent =
+        '服の色が 1つも選ばれていません。社員ごとの色分けができなくなります。';
+    }
+    download('agentSheet.ts', new Blob([buildModule()], { type: 'text/plain;charset=utf-8' }));
+  });
+
+  document.getElementById('exportPng').addEventListener('click', function () {
+    if (!latest.frames) return;
+    buildSheetCanvas(latest.frames).toBlob(function (blob) {
+      download('agent-64.png', blob);
+    });
+  });
+
+  // -------------------------------------------------------------- 入力まわり
+
+  function buildGrid() {
+    var grid = document.getElementById('grid');
+    grid.appendChild(document.createElement('div'));
+    COL_LABEL.forEach(function (text) {
+      var head = document.createElement('div');
+      head.className = 'head';
+      head.textContent = text;
+      grid.appendChild(head);
+    });
+
+    FACINGS.forEach(function (facing) {
+      var label = document.createElement('div');
+      label.className = 'rowlabel';
+      label.textContent = FACING_LABEL[facing];
+      grid.appendChild(label);
+      for (var c = 0; c < COLS; c++) grid.appendChild(makeCell(facing, c));
+    });
+  }
+
+  function makeCell(facing, col) {
+    var key = facing + '-' + col;
+    var cell = document.createElement('div');
+    cell.className = 'cell' + (col === 0 ? ' required' : '');
+
+    var hint = document.createElement('span');
+    hint.className = 'hint';
+    hint.textContent = col === 0 ? 'ここに\n画像を落とす' : '自動生成';
+    hint.style.whiteSpace = 'pre-line';
+    cell.appendChild(hint);
+
+    var THUMB = 96;
+    var thumb = document.createElement('canvas');
+    thumb.width = THUMB; thumb.height = THUMB;
+    cell.appendChild(thumb);
+
+    var clear = document.createElement('button');
+    clear.className = 'clear';
+    clear.textContent = '×';
+    clear.addEventListener('click', function (event) {
+      event.stopPropagation();
+      delete sources[key];
+      cell.classList.remove('filled');
+      thumb.getContext('2d').clearRect(0, 0, THUMB, THUMB);
+      rebuild();
+    });
+    cell.appendChild(clear);
+
+    function accept(file) {
+      if (!file || !/^image\//.test(file.type)) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var image = new Image();
+        image.onload = function () {
+          sources[key] = image;
+          cell.classList.add('filled');
+          var ctx = thumb.getContext('2d');
+          ctx.clearRect(0, 0, THUMB, THUMB);
+          ctx.imageSmoothingEnabled = true;
+          var s = Math.min(THUMB / image.naturalWidth, THUMB / image.naturalHeight);
+          var w = image.naturalWidth * s, h = image.naturalHeight * s;
+          ctx.drawImage(image, (THUMB - w) / 2, (THUMB - h) / 2, w, h);
+          rebuild();
+        };
+        // データURLで読み込むのは、file:// で開いてもキャンバスが汚染されず
+        // toDataURL() で書き出せるようにするためです。
+        image.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    cell.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      cell.classList.add('dragover');
+    });
+    cell.addEventListener('dragleave', function () { cell.classList.remove('dragover'); });
+    cell.addEventListener('drop', function (e) {
+      e.preventDefault();
+      cell.classList.remove('dragover');
+      accept(e.dataTransfer.files[0]);
+    });
+    cell.addEventListener('click', function () {
+      var picker = document.createElement('input');
+      picker.type = 'file';
+      picker.accept = 'image/*';
+      picker.addEventListener('change', function () { accept(picker.files[0]); });
+      picker.click();
+    });
+
+    return cell;
+  }
+
+  function bindControls() {
+    ['bodyHeight', 'footMargin', 'colors', 'stride', 'legBand', 'bob'].forEach(function (id) {
+      var input = document.getElementById(id);
+      var out = document.getElementById(id + 'Out');
+      function sync() { out.value = input.value; }
+      input.addEventListener('input', function () { sync(); rebuild(); });
+      sync();
+    });
+    ['bgMode', 'keyColor', 'keyTol'].forEach(function (id) {
+      document.getElementById(id).addEventListener('input', function () {
+        syncBgMode();
+        rebuild();
+      });
+    });
+    syncBgMode();
+  }
+
+  function syncBgMode() {
+    var isKey = document.getElementById('bgMode').value === 'key';
+    document.querySelectorAll('[data-when="key"]').forEach(function (row) {
+      row.style.display = isKey ? '' : 'none';
+    });
+  }
+
+  buildGrid();
+  bindControls();
+  rebuild();
+})();
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import {
   AttachmentTray,
@@ -16,7 +16,12 @@ import {
   splitYen,
   totalTokens,
 } from './costs';
-import { characterPortrait } from './game/characterSheet';
+import {
+  characterPortrait,
+  getSheetVersion,
+  PORTRAIT_SIZE,
+  subscribeSheetVersion,
+} from './game/characterSheet';
 import { roomNameFor } from './game/officeLayout';
 import { PhaserCanvas } from './game/PhaserCanvas';
 import { effortOptions, modelLabel, modelOptions, resolveModelId } from './models';
@@ -308,6 +313,9 @@ function loadRecentWorkspaces(): string[] {
 }
 
 export function App(): React.JSX.Element {
+  // ドット絵シートは仮キャラで始まり、本物の絵が読み込めた時点で差し替わります。
+  // そのタイミングで名簿のアイコンも描き直すための購読です。
+  useSyncExternalStore(subscribeSheetVersion, getSheetVersion);
   const {
     agents,
     selectedAgentId,
@@ -1697,8 +1705,8 @@ export function App(): React.JSX.Element {
                         className="roster-avatar"
                         src={characterPortrait(agent.color)}
                         alt=""
-                        width={32}
-                        height={40}
+                        width={PORTRAIT_SIZE}
+                        height={PORTRAIT_SIZE}
                       />
                       <span className="agent-copy">
                         <span className="roster-who">

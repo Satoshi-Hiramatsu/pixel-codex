@@ -1,7 +1,13 @@
 import Phaser from 'phaser';
 
 import type { AgentPresence, AgentState } from '../types';
-import { animationKey, ensureCharacterSheet, type Facing } from './characterSheet';
+import {
+  animationKey,
+  ATLAS_KEY,
+  ensureCharacterSheet,
+  frameName,
+  type Facing,
+} from './characterSheet';
 import { RETRO_FONT, textResolutionFor } from './fonts';
 import { center, doorTile, type Tile } from './officeLayout';
 
@@ -31,6 +37,24 @@ const LEAVE_FADE_DURATION = 460;
 /** 1マス（40px）を歩ききるのにかける時間。 */
 const STEP_DURATION = 210;
 
+/**
+ * 64×64 のコマを、足元がタイルの中心（＝影の位置）に来るように置くための縦ずれ。
+ * コマの中では足元が下端から 4px 上なので、スプライトの中心からは 28px 下になります。
+ */
+const CHARACTER_Y = 16 - 28;
+/**
+ * キャラが 32×40 から 64×64 になったぶん、頭の上に載っているもの
+ * （名前・ステータス・吹き出し）をまとめて持ち上げる量。
+ */
+const HEAD_LIFT = 20;
+const HIT_WIDTH = 48;
+const HIT_HEIGHT = 90;
+
+/** 当たり判定。頭のてっぺんから、足元より下の作業ラベルまでを含みます。 */
+function hitArea(): Phaser.Geom.Rectangle {
+  return new Phaser.Geom.Rectangle(-HIT_WIDTH / 2, -46, HIT_WIDTH, HIT_HEIGHT);
+}
+
 export class AgentSprite extends Phaser.GameObjects.Container {
   readonly agentId: string;
   private character: Phaser.GameObjects.Sprite;
@@ -51,6 +75,8 @@ export class AgentSprite extends Phaser.GameObjects.Container {
   private speechTimer?: Phaser.Time.TimerEvent;
   private breakMessageIndex: number;
   private selected = false;
+  /** 共有アトラスのどの枠（＝服の色）を使っているか。 */
+  private slot: number;
   private facing: Facing = 'down';
   private walkTween?: Phaser.Tweens.TweenChain;
   /** 退勤中。玄関に着いたらフロアから姿を消します。 */
@@ -80,16 +106,18 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     const textResolution = textResolutionFor(scene);
 
     // 真上から見た影。スプライトには焼き込まず、重なっても自然に見えるよう別物にしています。
-    const shadow = scene.add.ellipse(0, 16, 26, 12, 0x101719, 0.26);
-    const sheet = ensureCharacterSheet(scene, agent.color);
-    this.character = scene.add.sprite(0, -2, sheet, 'down-0').setOrigin(0.5, 0.5);
-    this.character.play(animationKey(agent.color, 'down', false));
+    const shadow = scene.add.ellipse(0, 16, 30, 13, 0x101719, 0.26);
+    this.slot = ensureCharacterSheet(scene, agent.color);
+    this.character = scene.add
+      .sprite(0, CHARACTER_Y, ATLAS_KEY, frameName(this.slot, 'down', 0))
+      .setOrigin(0.5, 0.5);
+    this.character.play(animationKey(this.slot, 'down', false));
     this.badge = scene.add.graphics();
     this.speechBubble = scene.add.graphics();
     this.nameBackground = scene.add.graphics();
     this.activityBackground = scene.add.graphics();
     this.speechLabel = scene.add
-      .text(0, -72, '', {
+      .text(0, -72 - HEAD_LIFT, '', {
         fontFamily: RETRO_FONT,
         fontSize: '11px',
         color: '#263136',
@@ -102,7 +130,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
       .setMaxLines(3);
     this.speechLabel.texture.setFilter(Phaser.Textures.FilterMode.LINEAR);
     this.nameLabel = scene.add
-      .text(0, -32, agent.name, {
+      .text(0, -32 - HEAD_LIFT, agent.name, {
         fontFamily: RETRO_FONT,
         fontSize: '11px',
         color: '#f4f0dc',
@@ -140,11 +168,8 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.drawNameBackground();
     this.drawActivityBackground();
     this.configureSpeechCycle(agent.status, this.currentPresence);
-    this.setSize(40, 78);
-    this.setInteractive(
-      new Phaser.Geom.Rectangle(-20, -40, 40, 78),
-      Phaser.Geom.Rectangle.Contains,
-    );
+    this.setSize(HIT_WIDTH, HIT_HEIGHT);
+    this.setInteractive(hitArea(), Phaser.Geom.Rectangle.Contains);
     this.on('pointerover', () => this.setScale(1.06));
     this.on('pointerout', () => this.setScale(1));
     this.on('pointerdown', () => this.emit('agent-selected', this.agentId));
@@ -175,9 +200,9 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.applyPresence(agent.presence ?? 'working');
     if (this.currentColor !== agent.color) {
       this.currentColor = agent.color;
-      const sheet = ensureCharacterSheet(this.scene, agent.color);
-      this.character.setTexture(sheet, `${this.facing}-0`);
-      this.character.play(animationKey(agent.color, this.facing, this.walking));
+      this.slot = ensureCharacterSheet(this.scene, agent.color);
+      this.character.setTexture(ATLAS_KEY, frameName(this.slot, this.facing, 0));
+      this.character.play(animationKey(this.slot, this.facing, this.walking));
     }
     if (this.currentName !== agent.name) {
       this.currentName = agent.name;
@@ -253,10 +278,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.fadeTween = undefined;
     this.setAlpha(1);
     this.setVisible(true);
-    this.setInteractive(
-      new Phaser.Geom.Rectangle(-20, -40, 40, 78),
-      Phaser.Geom.Rectangle.Contains,
-    );
+    this.setInteractive(hitArea(), Phaser.Geom.Rectangle.Contains);
     this.snapTo(doorTile);
   }
 
@@ -361,17 +383,21 @@ export class AgentSprite extends Phaser.GameObjects.Container {
   }
 
   private playWalk(moving: boolean): void {
-    const key = animationKey(this.currentColor, this.facing, moving);
+    const key = animationKey(this.slot, this.facing, moving);
     if (this.character.anims.currentAnim?.key === key) return;
     if (this.scene?.anims.exists(key)) this.character.play(key);
   }
 
   private drawBadge(status: AgentState['status']): void {
     this.badge.clear();
-    this.badge.fillStyle(0x1e282c, 1).fillRect(11, -26, 14, 14);
-    this.badge.fillStyle(statusColors[status], 1).fillRect(13, -24, 10, 10);
+    // キャラが横に広がったぶん、頭の右わきに逃がしています。
+    this.badge.fillStyle(0x1e282c, 1).fillRect(20, -26 - HEAD_LIFT, 14, 14);
+    this.badge.fillStyle(statusColors[status], 1).fillRect(22, -24 - HEAD_LIFT, 10, 10);
     if (status === 'approval') {
-      this.badge.fillStyle(0x1e282c, 1).fillRect(17, -23, 2, 5).fillRect(17, -17, 2, 2);
+      this.badge
+        .fillStyle(0x1e282c, 1)
+        .fillRect(26, -23 - HEAD_LIFT, 2, 5)
+        .fillRect(26, -17 - HEAD_LIFT, 2, 2);
     }
   }
 
@@ -385,7 +411,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.speechLabel.texture.setFilter(Phaser.Textures.FilterMode.LINEAR);
     const bubbleWidth = 186;
     const bubbleHeight = Math.max(34, Math.min(74, this.speechLabel.height + 14));
-    const bubbleBottom = -45;
+    const bubbleBottom = -45 - HEAD_LIFT;
     const bubbleTop = bubbleBottom - bubbleHeight;
     const borderColor = speechKind === 'question'
       ? 0xc78d2d
@@ -419,7 +445,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.nameBackground.clear();
     this.nameBackground
       .fillStyle(this.selected ? 0xb7793d : 0x263136, 1)
-      .fillRect(-Math.ceil(width / 2), -32 - Math.ceil(height / 2), width, height);
+      .fillRect(-Math.ceil(width / 2), -32 - HEAD_LIFT - Math.ceil(height / 2), width, height);
   }
 
   private drawActivityBackground(): void {

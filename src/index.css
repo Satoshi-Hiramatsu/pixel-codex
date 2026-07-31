@@ -191,7 +191,7 @@ button { color: inherit; }
 .floor-roster-row.left { opacity: .5; background: #ded1b3; }
 .floor-roster-row.left .agent-copy small { color: #6f6552; }
 /* フロアのキャラと同じスプライトを、拡大しても滲まないよう等倍のまま置きます。 */
-.roster-avatar { display: block; width: 32px; height: 40px; image-rendering: pixelated; }
+.roster-avatar { display: block; width: 40px; height: 40px; image-rendering: pixelated; }
 .floor-roster-row .agent-copy { gap: 2px; }
 .floor-roster-row .agent-copy strong { color: #302c24; font-size: 11px; }
 .floor-roster-row .agent-copy small { overflow: hidden; color: #7a6951; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
