@@ -69,6 +69,20 @@ const agentColors = [0xf0bd55, 0x65b7d8, 0xe1775b, 0x78b56c, 0xb58bd4, 0xe09cb2]
 const recentWorkspacesKey = 'pixel-codex-recent-workspaces';
 const recentWorkspaceLimit = 8;
 
+/** 規格が定める静穏帯。4マス分より狭いと読み取り率が落ちます。 */
+const qrMargin = 4;
+/** QRを出したい幅の目安。実際の幅はマスの数で割り切れる値へ丸めます。 */
+const qrTargetWidth = 390;
+
+/**
+ * 1マスあたりのピクセル数。マスの数で割り切れる整数にすることで、どのマスも
+ * 同じ大きさになり、拡大時もにじみません。
+ */
+function qrScale(value: string, errorCorrectionLevel: 'L' | 'M'): number {
+  const modules = QRCode.create(value, { errorCorrectionLevel }).modules.size + qrMargin * 2;
+  return Math.max(3, Math.floor(qrTargetWidth / modules));
+}
+
 /** 接続情報をQRにして見せます。端末のカメラで読めば入力なしでつながります。 */
 function PairingQr({ value, caption }: { value: string; caption: string }): React.JSX.Element {
   const [image, setImage] = useState('');
@@ -76,11 +90,19 @@ function PairingQr({ value, caption }: { value: string; caption: string }): Reac
 
   useEffect(() => {
     let active = true;
+    // 外部Relay用は170文字前後あってマス目が細かくなります。画面に出すだけで
+    // 汚れも折れも無いため、誤り訂正を下げてマスを大きく取ります。
+    const errorCorrectionLevel = value.length > 100 ? 'L' : 'M';
     QRCode.toDataURL(value, {
-      errorCorrectionLevel: 'M',
-      margin: 2,
-      // 外部Relay用は170文字前後になりQRが細かくなるため、余裕をもった大きさで出します。
-      width: 264,
+      errorCorrectionLevel,
+      // 規格が求める余白。ここを削るとカメラが枠を掴めなくなります。
+      margin: qrMargin,
+      /**
+       * 全体の幅ではなく「1マスあたりのピクセル数」で指定します。幅で指定すると
+       * マスの数で割り切れないときに4pxと5pxのマスが混じり、`image-rendering:
+       * pixelated`と相まって格子が歪んでカメラが読めなくなります。
+       */
+      scale: qrScale(value, errorCorrectionLevel),
       color: { dark: '#241a2e', light: '#f4ecdc' },
     })
       .then((url) => {

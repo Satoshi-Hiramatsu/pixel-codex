@@ -368,7 +368,8 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .pairing-panel.url-qr { border-color: #5f6f43; background: #2f3b28; }
 .pairing-lead b { display: block; margin-top: 5px; color: #ffd477; }
 .pairing-qr { display: flex; flex-direction: column; align-items: center; gap: 7px; margin: 0 0 11px; }
-.pairing-qr img { width: 264px; height: 264px; image-rendering: pixelated; border: 4px solid #f4ecdc; }
+/* 幅を決め打ちすると1マスが半端なピクセル数になり格子が歪みます。生成時の実寸のまま出します。 */
+.pairing-qr img { max-width: 100%; height: auto; image-rendering: pixelated; border: 4px solid #f4ecdc; }
 .pairing-qr figcaption { color: #d9c8ea; font: 700 9px Consolas, monospace; letter-spacing: 1.1px; }
 .pairing-qr-error { margin: 0 0 10px; color: #ffb59a; font-size: 10px; }
 .communication-caution { margin: 6px 0 0; padding: 7px 9px; color: #5e4626; border-left: 4px solid #c07a2e; background: #f0dda8; font-size: 9px; line-height: 1.55; }
