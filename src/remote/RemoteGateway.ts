@@ -8,6 +8,11 @@ import {
   type RemoteGatewayStatus,
   type RemoteInstruction,
   type RemoteInstructionResult,
+  type RemotePreviewFailed,
+  type RemotePreviewReady,
+  type RemotePreviewRequest,
+  type RemotePreviewSourceSummary,
+  type RemotePreviewSourcesRequest,
   type RemoteQuestionResponse,
   type RemoteStateSnapshot,
 } from './RemoteProtocol';
@@ -158,7 +163,27 @@ export class RemoteGateway extends EventEmitter {
       this.emit('approval', command.approval satisfies RemoteApprovalResponse);
       return;
     }
+    if (command.kind === 'previewSources') {
+      this.emit('previewSources', command.request satisfies RemotePreviewSourcesRequest);
+      return;
+    }
+    if (command.kind === 'preview') {
+      this.emit('preview', command.request satisfies RemotePreviewRequest);
+      return;
+    }
     this.emit('question', command.question satisfies RemoteQuestionResponse);
+  }
+
+  sendPreviewSources(sources: RemotePreviewSourceSummary[]): void {
+    this.send('preview.sources', { sources });
+  }
+
+  sendPreviewReady(ready: RemotePreviewReady): void {
+    this.send('preview.ready', ready, ready.messageId);
+  }
+
+  sendPreviewFailed(failed: RemotePreviewFailed): void {
+    this.send('preview.failed', failed, failed.messageId);
   }
 
   private send(type: string, payload: unknown, messageId?: string): void {

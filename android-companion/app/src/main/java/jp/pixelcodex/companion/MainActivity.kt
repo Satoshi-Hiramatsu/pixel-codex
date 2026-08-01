@@ -1,10 +1,12 @@
 package jp.pixelcodex.companion
 
 import android.content.SharedPreferences
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -38,6 +40,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -47,7 +52,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import java.util.UUID
 
-private enum class CompanionTab { CONSOLE, SETTINGS }
+private enum class CompanionTab { CONSOLE, PREVIEW, SETTINGS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,6 +103,7 @@ private fun CompanionApp(
     var pairMessage by remember { mutableStateOf("") }
     var manualOpen by remember { mutableStateOf(false) }
     var instruction by remember { mutableStateOf("") }
+    var previewViewport by remember { mutableStateOf("mobile") }
     var tab by remember {
         mutableStateOf(if (initialRelayUrl.isBlank()) CompanionTab.SETTINGS else CompanionTab.CONSOLE)
     }
@@ -197,6 +203,16 @@ private fun CompanionApp(
         }
     }
 
+    // 撮影対象は見た目タブを開いたときだけ取りに行きます。開くまでは何も要求しません。
+    LaunchedEffect(tab, state.phase, state.preview.sourcesLoaded) {
+        if (tab == CompanionTab.PREVIEW
+            && state.phase == ConnectionPhase.ONLINE
+            && !state.preview.sourcesLoaded
+        ) {
+            client.requestPreviewSources()
+        }
+    }
+
     LaunchedEffect(autoConnect, initialRelayUrl, initialHostId) {
         if (autoConnect && initialRelayUrl.isNotBlank() && initialHostId.isNotBlank()) {
             saveConnection(initialRelayUrl, initialHostId)
@@ -231,6 +247,16 @@ private fun CompanionApp(
                     onAnswerQuestion = { requestId, answers ->
                         client.sendQuestionAnswers(requestId, answers)
                     },
+                )
+
+                CompanionTab.PREVIEW -> PreviewTab(
+                    preview = state.preview,
+                    online = online,
+                    viewport = previewViewport,
+                    onViewportChange = { previewViewport = it },
+                    onRefreshSources = { client.requestPreviewSources() },
+                    onCapture = { sourceId -> client.requestPreview(sourceId, previewViewport) },
+                    onLoadImage = { url, onDone -> client.fetchPreview(url, onDone) },
                 )
 
                 CompanionTab.SETTINGS -> SettingsTab(
@@ -294,6 +320,9 @@ private fun TabSwitch(tab: CompanionTab, onSelect: (CompanionTab) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TabButton("Codex", tab == CompanionTab.CONSOLE, Modifier.weight(1f)) {
             onSelect(CompanionTab.CONSOLE)
+        }
+        TabButton("見た目", tab == CompanionTab.PREVIEW, Modifier.weight(1f)) {
+            onSelect(CompanionTab.PREVIEW)
         }
         TabButton("通信設定", tab == CompanionTab.SETTINGS, Modifier.weight(1f)) {
             onSelect(CompanionTab.SETTINGS)
@@ -630,6 +659,105 @@ private fun StatusCard(state: RemoteUiState) {
             }
         }
     }
+}
+
+@Composable
+private fun PreviewTab(
+    preview: PreviewState,
+    online: Boolean,
+    viewport: String,
+    onViewportChange: (String) -> Unit,
+    onRefreshSources: () -> Unit,
+    onCapture: (String) -> Unit,
+    onLoadImage: (String, (ByteArray?) -> Unit) -> Unit,
+) {
+    var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var loadError by remember { mutableStateOf("") }
+
+    // 届いた在り処から実物を取りに行きます。要求したときだけ通信が起きる経路です。
+    LaunchedEffect(preview.image?.previewId) {
+        val image = preview.image
+        bitmap = null
+        loadError = ""
+        if (image == null) return@LaunchedEffect
+        onLoadImage(image.url) { data ->
+            val decoded = data?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            if (decoded == null) loadError = "画像を受け取れませんでした" else bitmap = decoded.asImageBitmap()
+        }
+    }
+
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF203F38))) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("いまの見た目", fontWeight = FontWeight.Black)
+            Text(
+                "選んだものをPCがその場で撮って送ります。自動では送られません。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TabButton("スマホ幅", viewport == "mobile", Modifier.weight(1f)) { onViewportChange("mobile") }
+                TabButton("PC幅", viewport == "desktop", Modifier.weight(1f)) { onViewportChange("desktop") }
+            }
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = online,
+                onClick = onRefreshSources,
+            ) { Text("対象を読み込み直す") }
+
+            if (preview.busy) Text("PCで撮影中…", color = MaterialTheme.colorScheme.primary)
+            if (preview.message.isNotBlank()) {
+                Text(preview.message, style = MaterialTheme.typography.bodySmall)
+            }
+            if (!online) {
+                Text("PCがオフラインです", style = MaterialTheme.typography.bodySmall)
+            } else if (preview.sourcesLoaded && preview.sources.isEmpty() && preview.message.isBlank()) {
+                Text("撮影できる対象がありません", style = MaterialTheme.typography.bodySmall)
+            }
+
+            preview.sources.forEach { source ->
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = online && !preview.busy,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2F6F62)),
+                    onClick = { onCapture(source.id) },
+                ) {
+                    Text("${previewSourceMark(source.kind)} ${source.label}", maxLines = 2)
+                }
+            }
+        }
+    }
+
+    val image = preview.image
+    if (image != null) {
+        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF16323F))) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val shown = bitmap
+                if (shown != null) {
+                    Image(
+                        bitmap = shown,
+                        contentDescription = "PCの画面",
+                        modifier = Modifier.fillMaxWidth(),
+                        contentScale = ContentScale.FillWidth,
+                    )
+                } else if (loadError.isNotBlank()) {
+                    Text(loadError)
+                } else {
+                    Text("画像を受け取っています…", color = MaterialTheme.colorScheme.secondary)
+                }
+                Text(
+                    "${image.width}×${image.height} / ${image.bytes / 1024}KB",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+        }
+    }
+}
+
+private fun previewSourceMark(kind: String): String = when (kind) {
+    "url" -> "WEB"
+    "file" -> "FILE"
+    else -> "WINDOW"
 }
 
 @Composable

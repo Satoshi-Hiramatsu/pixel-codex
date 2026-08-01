@@ -372,6 +372,13 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .pairing-qr figcaption { color: #d9c8ea; font: 700 9px Consolas, monospace; letter-spacing: 1.1px; }
 .pairing-qr-error { margin: 0 0 10px; color: #ffb59a; font-size: 10px; }
 .communication-caution { margin: 6px 0 0; padding: 7px 9px; color: #5e4626; border-left: 4px solid #c07a2e; background: #f0dda8; font-size: 9px; line-height: 1.55; }
+.communication-button-secondary { min-height: 30px; padding: 0 12px; color: #34352f; border: 2px solid #8b744e; background: #f1e7aa; box-shadow: 2px 2px 0 #b39a6d; cursor: pointer; font-size: 10px; font-weight: 900; }
+.communication-button-secondary:hover { color: #fff8d8; background: #aa713b; }
+.communication-source-list { margin: 10px 0 0; padding: 0; list-style: none; }
+.communication-source-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 6px 3px; border-bottom: 1px dashed #b39a6d; }
+.communication-source-list span { overflow: hidden; color: #504633; font: 10px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.communication-source-list button { height: 24px; padding: 0 9px; color: #5e2c22; border: 2px solid #a5644f; background: #edc3b3; cursor: pointer; font-size: 9px; font-weight: 900; }
+.communication-source-list button:hover { color: #fff2ea; background: #a5644f; }
 .communication-rule { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 7px 9px; margin-top: 10px; font-size: 10px; line-height: 1.45; }
 .communication-rule b { color: #2f7469; }
 .communication-rule span { color: #61533e; }

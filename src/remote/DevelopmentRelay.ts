@@ -1,5 +1,6 @@
 import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs/promises';
 import http from 'node:http';
 
 import WebSocket, { type RawData, WebSocketServer } from 'ws';
@@ -55,6 +56,20 @@ interface PairingWindow {
 /** 6桁コードの総当たりを防ぐ回数。使い切るとその場でペアリングを閉じます。 */
 const maxPairingAttempts = 5;
 const portScanRange = 10;
+const previewPathPrefix = '/preview/';
+/** 端末が取りに来ないまま溜まらないよう、この枚数を超えたら古いものから捨てます。 */
+const maxPublishedPreviews = 12;
+
+/**
+ * 撮影した画像の置き場。WebSocketは16KB上限かつテキストのみなので、画像は
+ * このHTTP側で渡します。ここに載せたidだけが配信対象で、リクエストに入っていた
+ * 文字列からファイルの場所を組み立てることはありません。
+ */
+interface PublishedPreview {
+  filePath: string;
+  mimeType: string;
+  expiresAt: number;
+}
 
 function send(socket: WebSocket, value: unknown): void {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
@@ -72,6 +87,7 @@ export class DevelopmentRelay extends EventEmitter {
   private pairing?: PairingWindow;
   private readonly hosts = new Map<string, RelaySocket>();
   private readonly devices = new Map<string, Set<RelaySocket>>();
+  private readonly previews = new Map<string, PublishedPreview>();
 
   async start(options: DevelopmentRelayOptions = {}): Promise<DevelopmentRelayInfo> {
     const bindHost = options.bindHost ?? '127.0.0.1';
@@ -94,6 +110,10 @@ export class DevelopmentRelay extends EventEmitter {
       }
       if (request.method === 'POST' && request.url === '/pair') {
         this.handlePairRequest(request, response);
+        return;
+      }
+      if (request.method === 'GET' && request.url?.startsWith(previewPathPrefix)) {
+        this.handlePreviewRequest(request, response, token);
         return;
       }
       response.writeHead(404).end();
@@ -226,7 +246,7 @@ export class DevelopmentRelay extends EventEmitter {
         return;
       }
       const provided = typeof body.code === 'string' ? body.code.replace(/\D/g, '') : '';
-      if (!codeMatches(pairing.code, provided)) {
+      if (!secretMatches(pairing.code, provided)) {
         pairing.attemptsLeft -= 1;
         if (pairing.attemptsLeft <= 0) {
           this.closePairing('failed', undefined, 'コードを規定回数まちがえたため中止しました');
@@ -249,9 +269,82 @@ export class DevelopmentRelay extends EventEmitter {
     });
   }
 
+  /**
+   * 撮った画像を取りに来られる状態にします。宛先は推測できないidで、期限を過ぎたら
+   * 実ファイルごと消します。
+   *
+   * 返すのはパスだけです。PCがどのアドレスで見えているかは端末側しか知らないうえ、
+   * 端末は接続に使っているRelayトークンをすでに持っているので、絶対URLの組み立ては
+   * 端末に任せたほうが確実で、トークンをメッセージへ二重に載せずに済みます。
+   */
+  publishPreview(filePath: string, mimeType: string, ttlMs: number): {
+    previewId: string;
+    path: string;
+    expiresAt: number;
+  } {
+    if (!this.info) throw new Error('Relayが起動していません');
+    this.sweepPreviews();
+    while (this.previews.size >= maxPublishedPreviews) {
+      const oldest = this.previews.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.discardPreview(oldest);
+    }
+    const previewId = randomUUID();
+    const expiresAt = Date.now() + ttlMs;
+    this.previews.set(previewId, { filePath, mimeType, expiresAt });
+    return { previewId, path: `${previewPathPrefix}${previewId}`, expiresAt };
+  }
+
+  private discardPreview(previewId: string): void {
+    const preview = this.previews.get(previewId);
+    if (!preview) return;
+    this.previews.delete(previewId);
+    void fs.rm(preview.filePath, { force: true }).catch(() => undefined);
+  }
+
+  private sweepPreviews(): void {
+    const now = Date.now();
+    for (const [previewId, preview] of this.previews) {
+      if (preview.expiresAt <= now) this.discardPreview(previewId);
+    }
+  }
+
+  private handlePreviewRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    token: string,
+  ): void {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    if (!secretMatches(token, url.searchParams.get('token') ?? '')) {
+      response.writeHead(401).end();
+      return;
+    }
+    const previewId = decodeURIComponent(url.pathname.slice(previewPathPrefix.length));
+    const preview = this.previews.get(previewId);
+    if (!preview || preview.expiresAt <= Date.now()) {
+      if (preview) this.discardPreview(previewId);
+      response.writeHead(404).end();
+      return;
+    }
+    fs.readFile(preview.filePath).then((data) => {
+      response.writeHead(200, {
+        'content-type': preview.mimeType,
+        'content-length': String(data.length),
+        'content-disposition': 'inline',
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'no-store',
+      });
+      response.end(data);
+    }).catch(() => {
+      this.discardPreview(previewId);
+      if (!response.writableEnded) response.writeHead(404).end();
+    });
+  }
+
   stop(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
+    for (const previewId of [...this.previews.keys()]) this.discardPreview(previewId);
     this.closePairing('cancelled');
     for (const socket of this.websocketServer?.clients ?? []) socket.terminate();
     this.websocketServer?.close();
@@ -353,6 +446,7 @@ export class DevelopmentRelay extends EventEmitter {
   }
 
   private ping(): void {
+    this.sweepPreviews();
     for (const websocket of this.websocketServer?.clients ?? []) {
       const socket = websocket as RelaySocket;
       if (!socket.alive) {
@@ -366,8 +460,11 @@ export class DevelopmentRelay extends EventEmitter {
 }
 
 /** 桁数の違いで早く返らないよう、長さを揃えてから比べます。 */
-function codeMatches(expected: string, provided: string): boolean {
+function secretMatches(expected: string, provided: string): boolean {
   const expectedBuffer = Buffer.from(expected, 'utf8');
+  // クエリ文字列から任意の値が来ても、長さ違いでtimingSafeEqualが例外を投げないようにします。
+  if (provided.length !== expected.length) return false;
+  if (Buffer.byteLength(provided, 'utf8') !== expectedBuffer.length) return false;
   const paddedProvided = provided.padEnd(expected.length, ' ').slice(0, expected.length);
   const matched = timingSafeEqual(expectedBuffer, Buffer.from(paddedProvided, 'utf8'));
   return matched && provided.length === expected.length;

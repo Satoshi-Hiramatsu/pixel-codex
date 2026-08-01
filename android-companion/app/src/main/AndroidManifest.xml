@@ -5,11 +5,19 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!--
+      usesCleartextTraffic：同じWi-Fi内のPCへはIPアドレスで直接つなぐため、暗号化なしの
+      通信が要ります（ペアリングのhttp://、Relayのws://、画面プレビューの取得）。宛先を
+      プライベートIP帯だけに絞る判断は RemoteClient.connect が行います。ネットワーク設定
+      XMLではIPの範囲を書けないため、制限はアプリ側のコードで持たせています。
+    -->
     <application
         android:allowBackup="false"
+        android:icon="@drawable/pixel_codex_app_icon"
         android:label="Pixel Codex"
+        android:roundIcon="@drawable/pixel_codex_app_icon"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

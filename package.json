@@ -1,7 +1,7 @@
 {
   "name": "pixel-codex",
   "productName": "Pixel Codex",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A pixel office for visualizing and directing Codex agents",
   "main": ".webpack/main",
   "private": true,

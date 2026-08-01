@@ -5,6 +5,7 @@ import started from 'electron-squirrel-startup';
 import fs from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { CodexClient } from './codex/CodexClient';
@@ -18,6 +19,18 @@ import { createSave, getRepoStatus, initRepo, listSaves, loadSave } from './save
 import { RemoteGateway } from './remote/RemoteGateway';
 import { DevelopmentRelay } from './remote/DevelopmentRelay';
 import {
+  captureUrl,
+  captureWindow,
+  discardPreviews,
+  listCapturableWindows,
+  type CapturedPreview,
+} from './remote/PreviewCapture';
+import {
+  normalizePreviewSources,
+  summarizePreviewSources,
+  type PreviewSource,
+} from './remote/previewSources';
+import {
   deleteSkill,
   listSkillShelves,
   readSkillBook,
@@ -29,6 +42,7 @@ import type {
   CodexProcessInfo,
   RemoteGatewayConfig,
   RemoteInstructionResult,
+  RemotePreviewRequest,
   RemoteStateSnapshot,
   SaveMeta,
   SkillScope,
@@ -340,6 +354,78 @@ async function resumeWirelessRelay(): Promise<void> {
   }
 }
 
+/**
+ * 撮影対象の控え。通信室で登録したものを画面から預かっておき、端末からの要求は
+ * このidとの照合だけで解決します。端末がURLやパスを名乗ることはありません。
+ */
+let registeredPreviewSources: PreviewSource[] = [];
+let previewAllowed = false;
+
+/** 端末が取りに来るまでの猶予。過ぎたら実ファイルごと消えます。 */
+const previewTtlMs = 10 * 60_000;
+
+async function respondWithPreviewSources(): Promise<void> {
+  const gateway = remoteGateway;
+  if (!gateway) return;
+  if (!previewAllowed) {
+    gateway.sendPreviewSources([]);
+    return;
+  }
+  // ウィンドウは開いたり閉じたりするので、控えず要求のたびに数え直します。
+  const windows = await listCapturableWindows().catch(() => []);
+  gateway.sendPreviewSources([
+    ...summarizePreviewSources(registeredPreviewSources),
+    ...windows.map((window) => ({ id: window.id, kind: 'window' as const, label: window.label })),
+  ]);
+}
+
+async function capturePreviewSource(request: RemotePreviewRequest): Promise<CapturedPreview> {
+  const source = registeredPreviewSources.find((candidate) => candidate.id === request.sourceId);
+  if (source?.kind === 'url' && source.url) {
+    return captureUrl(source.url, request.viewport);
+  }
+  if (source?.kind === 'file' && source.workspace && source.relativePath) {
+    const { target } = await resolveWorkspaceItem(source.workspace, source.relativePath);
+    return captureUrl(pathToFileURL(target).toString(), request.viewport);
+  }
+  // 登録一覧に無いidはウィンドウ。開いているものとの照合はcaptureWindowが行います。
+  return captureWindow(request.sourceId);
+}
+
+async function deliverPreview(request: RemotePreviewRequest): Promise<void> {
+  const gateway = remoteGateway;
+  if (!gateway) return;
+  if (!previewAllowed) {
+    gateway.sendPreviewFailed({
+      messageId: request.messageId,
+      reason: 'PCの通信室でプレビューの送信が許可されていません',
+    });
+    return;
+  }
+  try {
+    const captured = await capturePreviewSource(request);
+    const published = developmentRelay.publishPreview(
+      captured.filePath,
+      captured.mimeType,
+      previewTtlMs,
+    );
+    gateway.sendPreviewReady({
+      messageId: request.messageId,
+      previewId: published.previewId,
+      path: published.path,
+      width: captured.width,
+      height: captured.height,
+      bytes: captured.bytes,
+      expiresAt: published.expiresAt,
+    });
+  } catch (error) {
+    gateway.sendPreviewFailed({
+      messageId: request.messageId,
+      reason: error instanceof Error ? error.message : '撮影できませんでした',
+    });
+  }
+}
+
 /** 画面から届いた置き場所の指定。知らない値はグローバル扱いにします。 */
 function normalizeScope(value: unknown): SkillScope {
   return value === 'project' ? 'project' : 'global';
@@ -385,6 +471,17 @@ function registerIpc(): void {
   ipcMain.handle('remote:acknowledge', (_event, result: RemoteInstructionResult) => {
     remoteGateway?.acknowledge(result);
   });
+  /**
+   * 撮影対象は端末へ配る`state.snapshot`には載せません。あれは返答が1文字進むたびに
+   * 流れる経路なので、選択肢のような滅多に変わらないものを混ぜると通信量だけ増えます。
+   */
+  ipcMain.handle(
+    'remote:set-preview-sources',
+    (_event, payload: { enabled?: boolean; sources?: unknown }) => {
+      previewAllowed = payload?.enabled === true;
+      registeredPreviewSources = previewAllowed ? normalizePreviewSources(payload?.sources) : [];
+    },
+  );
   ipcMain.handle('app:choose-workspace', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0];
@@ -567,10 +664,14 @@ function registerIpc(): void {
 }
 
 function createWindow(): void {
+  const windowIcon = app.isPackaged
+    ? path.join(process.resourcesPath, 'pixel-codex-icon.png')
+    : path.join(app.getAppPath(), 'assets', 'branding', 'pixel-codex-icon.png');
   const mainWindow = new BrowserWindow({
     height: 820,
     width: 1440,
     minHeight: 680,
+    icon: windowIcon,
     // レイアウトが必要とする幅（index.css の min-width）と揃えます。これより狭くすると
     // 右カラムが画面の外へ出てしまい、タブにも会議パネルにも手が届きません。
     minWidth: 1240,
@@ -594,6 +695,8 @@ app.whenReady().then(async () => {
   remoteGateway.on('instruction', (instruction) => broadcast('remote:instruction', instruction));
   remoteGateway.on('approval', (response) => broadcast('remote:approval', response));
   remoteGateway.on('question', (response) => broadcast('remote:question', response));
+  remoteGateway.on('previewSources', () => void respondWithPreviewSources());
+  remoteGateway.on('preview', (request: RemotePreviewRequest) => void deliverPreview(request));
   developmentRelay.on('pairing', (event: WirelessPairingEvent) => {
     if (event.phase === 'paired') void markRemotePaired();
     broadcast('remote:pairing', event);
@@ -608,6 +711,7 @@ app.on('before-quit', () => {
   codex.stop();
   // 貼り付けた画像の置き場は、そのセッションのあいだだけ残しておけば十分です。
   void fs.rm(attachmentTempRoot(), { recursive: true, force: true }).catch(() => undefined);
+  void discardPreviews();
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

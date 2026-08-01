@@ -2,6 +2,7 @@ package jp.pixelcodex.companion
 
 import android.os.Handler
 import android.os.Looper
+import java.io.IOException
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
@@ -9,6 +10,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -43,6 +46,33 @@ data class QuestionRequest(
     val questions: List<QuestionItem>,
 )
 
+/** PCが登録した撮影対象。端末はこのidを送り返すだけで、URLやパスは扱いません。 */
+data class PreviewSource(
+    val id: String,
+    val kind: String,
+    val label: String,
+)
+
+/**
+ * 撮れた画像の在り処。画像そのものはWebSocketに載せられない（16KB上限・テキスト
+ * のみ）ので、Relayの別経路から取りに行きます。
+ */
+data class PreviewImage(
+    val previewId: String,
+    val url: String,
+    val width: Int,
+    val height: Int,
+    val bytes: Int,
+)
+
+data class PreviewState(
+    val sources: List<PreviewSource> = emptyList(),
+    val sourcesLoaded: Boolean = false,
+    val busy: Boolean = false,
+    val message: String = "",
+    val image: PreviewImage? = null,
+)
+
 data class RemoteUiState(
     val phase: ConnectionPhase = ConnectionPhase.OFFLINE,
     val status: String = "未接続",
@@ -56,6 +86,7 @@ data class RemoteUiState(
     val approval: ApprovalRequest? = null,
     val question: QuestionRequest? = null,
     val lastCommandResult: String = "",
+    val preview: PreviewState = PreviewState(),
 )
 
 class RemoteClient(private val deviceId: String) {
@@ -70,6 +101,9 @@ class RemoteClient(private val deviceId: String) {
     private var shouldReconnect = false
     private var connectionGeneration = 0
     private val reconnectHandler = Handler(Looper.getMainLooper())
+    // 再接続用とは分けます。あちらはdisconnectでまとめて取り消すので、画像の受け取りが
+    // 巻き添えで消えてしまうためです。
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun connect(relayUrl: String, targetHostId: String) {
         disconnect()
@@ -170,6 +204,65 @@ class RemoteClient(private val deviceId: String) {
         return sent
     }
 
+    fun requestPreviewSources(): Boolean {
+        val socket = webSocket ?: return false
+        if (mutableState.value.phase != ConnectionPhase.ONLINE) return false
+        val payload = JSONObject().put("deviceId", deviceId)
+        val sent = socket.send(envelope("preview.sources.request", payload))
+        if (sent) updatePreview { it.copy(busy = true, message = "対象を確認中") }
+        return sent
+    }
+
+    fun requestPreview(sourceId: String, viewport: String): Boolean {
+        val socket = webSocket ?: return false
+        if (mutableState.value.phase != ConnectionPhase.ONLINE) return false
+        val payload = JSONObject()
+            .put("deviceId", deviceId)
+            .put("sourceId", sourceId)
+            .put("viewport", viewport)
+        val sent = socket.send(envelope("preview.request", payload))
+        if (sent) updatePreview { it.copy(busy = true, message = "PCで撮影中", image = null) }
+        return sent
+    }
+
+    /** 画像はWebSocketに載らないので、同じRelayのHTTP側から取ります。 */
+    fun fetchPreview(url: String, onDone: (ByteArray?) -> Unit) {
+        val request = Request.Builder().url(url).build()
+        httpClient.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                mainHandler.post { onDone(null) }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val data = response.use { if (it.isSuccessful) it.body.bytes() else null }
+                mainHandler.post { onDone(data) }
+            }
+        })
+    }
+
+    private fun updatePreview(transform: (PreviewState) -> PreviewState) {
+        mutableState.value = mutableState.value.copy(preview = transform(mutableState.value.preview))
+    }
+
+    /**
+     * PCから届くのはRelayからの相対パスだけです。PCがどのアドレスで見えているかは
+     * こちらしか知らず、接続に使っているトークンも手元にあるので、宛先はここで組み立てます。
+     */
+    private fun previewUrl(path: String): String {
+        if (!path.startsWith("/")) return ""
+        val relay = runCatching { URI(relayUrl) }.getOrNull() ?: return ""
+        val host = relay.host ?: return ""
+        val token = relay.query
+            ?.split('&')
+            ?.firstOrNull { it.startsWith("token=") }
+            ?.removePrefix("token=")
+            .orEmpty()
+        if (token.isEmpty()) return ""
+        val scheme = if (relay.scheme == "wss") "https" else "http"
+        val port = if (relay.port > 0) ":${relay.port}" else ""
+        return "$scheme://$host$port$path?token=$token"
+    }
+
     fun close() {
         disconnect()
         httpClient.dispatcher.executorService.shutdown()
@@ -194,6 +287,61 @@ class RemoteClient(private val deviceId: String) {
                 mutableState.value = mutableState.value.copy(
                     lastCommandResult = "${outcomeLabel(outcome)}：$detail",
                 )
+                // プレビューの要求が受付前に弾かれると応答が返らないので、待ち表示を解きます。
+                if (outcome == "rejected" || outcome == "failed") {
+                    updatePreview {
+                        if (it.busy) it.copy(busy = false, message = detail) else it
+                    }
+                }
+            }
+            "preview.sources" -> {
+                val array = message.optJSONObject("payload")?.optJSONArray("sources")
+                val sources = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                    val item = array?.optJSONObject(index) ?: return@mapNotNull null
+                    val id = item.optString("id")
+                    val label = item.optString("label")
+                    if (id.isEmpty() || label.isEmpty()) return@mapNotNull null
+                    PreviewSource(id, item.optString("kind", "window"), label)
+                }
+                updatePreview {
+                    it.copy(
+                        sources = sources,
+                        sourcesLoaded = true,
+                        busy = false,
+                        message = if (sources.isEmpty()) {
+                            "PCの通信室で「画面プレビュー」を許可してください"
+                        } else {
+                            ""
+                        },
+                    )
+                }
+            }
+            "preview.ready" -> {
+                val payload = message.optJSONObject("payload") ?: return
+                val url = previewUrl(payload.optString("path"))
+                if (url.isEmpty()) {
+                    updatePreview { it.copy(busy = false, message = "画像の取得先を組み立てられませんでした") }
+                    return
+                }
+                updatePreview {
+                    it.copy(
+                        busy = false,
+                        message = "",
+                        image = PreviewImage(
+                            previewId = payload.optString("previewId"),
+                            url = url,
+                            width = payload.optInt("width"),
+                            height = payload.optInt("height"),
+                            bytes = payload.optInt("bytes"),
+                        ),
+                    )
+                }
+            }
+            "preview.failed" -> {
+                val reason = message.optJSONObject("payload")?.optString("reason").orEmpty()
+                updatePreview {
+                    it.copy(busy = false, message = reason.ifEmpty { "撮影できませんでした" })
+                }
             }
             "relay.error" -> {
                 mutableState.value = mutableState.value.copy(

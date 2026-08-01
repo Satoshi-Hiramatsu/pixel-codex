@@ -35,6 +35,8 @@ import {
   saveCommunicationPolicy,
 } from './remote/communicationPolicy';
 import type { CommunicationPolicyPatch } from './remote/communicationPolicy';
+import { isPreviewableFile, maxPreviewUrls, normalizePreviewUrl } from './remote/previewSources';
+import type { PreviewSource } from './remote/previewSources';
 import { lanPairingQr, reachableRelayUrl, urlPairingQr } from './remote/RemoteProtocol';
 import { SkillBook, useSkillBook } from './SkillBook';
 import { skillBriefing } from './skills/skillFile';
@@ -435,6 +437,7 @@ export function App(): React.JSX.Element {
   const [communicationOpen, setCommunicationOpen] = useState(false);
   const [communicationPolicy, setCommunicationPolicy] = useState(loadCommunicationPolicy);
   const [communicationNotice, setCommunicationNotice] = useState('');
+  const [previewUrlDraft, setPreviewUrlDraft] = useState('');
   const [usbTestBusy, setUsbTestBusy] = useState(false);
   const [wirelessTestBusy, setWirelessTestBusy] = useState(false);
   const [pairingBusy, setPairingBusy] = useState(false);
@@ -991,6 +994,30 @@ export function App(): React.JSX.Element {
     setCommunicationNotice('設定をこのPCに保存しました');
   }
 
+  function addPreviewUrl(): void {
+    const url = normalizePreviewUrl(previewUrlDraft);
+    if (!url) {
+      setCommunicationNotice('http:// または https:// で始まるURLを入力してください');
+      return;
+    }
+    if (communicationPolicy.previewUrls.includes(url)) {
+      setCommunicationNotice('そのURLはすでに登録されています');
+      return;
+    }
+    if (communicationPolicy.previewUrls.length >= maxPreviewUrls) {
+      setCommunicationNotice(`登録できるURLは${maxPreviewUrls}件までです`);
+      return;
+    }
+    setPreviewUrlDraft('');
+    updateCommunicationPolicy({ previewUrls: [...communicationPolicy.previewUrls, url] });
+  }
+
+  function removePreviewUrl(url: string): void {
+    updateCommunicationPolicy({
+      previewUrls: communicationPolicy.previewUrls.filter((entry) => entry !== url),
+    });
+  }
+
   function validateCommunicationRelay(): void {
     if (!communicationPolicy.relayUrl) {
       setCommunicationNotice('Relay URLを入力してください');
@@ -1460,6 +1487,39 @@ export function App(): React.JSX.Element {
     messages,
     communicationPolicy,
   ]);
+
+  /**
+   * 端末が選べる撮影対象。`state.snapshot`には載せず、変わったときだけメインへ預けます。
+   * あれは返事が1文字進むたびに端末へ流れる経路なので、滅多に変わらない選択肢を
+   * 混ぜても通信量が増えるだけだからです。
+   */
+  const previewSources = useMemo<PreviewSource[]>(() => {
+    const urls: PreviewSource[] = communicationPolicy.previewUrls.map((url) => ({
+      id: `url:${url}`,
+      kind: 'url',
+      label: url,
+      url,
+    }));
+    if (!workspace) return urls;
+    const files: PreviewSource[] = deliverables
+      .filter((deliverable) => deliverable.kind !== 'deleted' && isPreviewableFile(deliverable.path))
+      .slice(-8)
+      .map((deliverable) => ({
+        id: `file:${deliverable.path}`,
+        kind: 'file',
+        label: fileName(deliverable.path),
+        workspace,
+        relativePath: deliverable.path,
+      }));
+    return [...urls, ...files];
+  }, [communicationPolicy.previewUrls, deliverables, workspace]);
+
+  useEffect(() => {
+    void window.pixelCodex.setRemotePreviewSources(
+      communicationPolicy.enabled && communicationPolicy.allowRemotePreview,
+      previewSources,
+    );
+  }, [communicationPolicy.enabled, communicationPolicy.allowRemotePreview, previewSources]);
 
   useEffect(() => {
     if (!remoteQueue.length || remoteInstructionRunning.current) return;
@@ -2512,7 +2572,54 @@ export function App(): React.JSX.Element {
                 </section>
 
                 <section className="communication-card">
-                  <header><span>03</span><h3>通知するタイミング</h3></header>
+                  <header><span>03</span><h3>画面プレビュー</h3></header>
+                  <label className="communication-check important">
+                    <input
+                      type="checkbox"
+                      checked={communicationPolicy.allowRemotePreview}
+                      onChange={(event) => updateCommunicationPolicy({ allowRemotePreview: event.target.checked })}
+                    />
+                    スマートフォンからの要求で画面を撮って送る
+                  </label>
+                  <p className="communication-caution">
+                    要求されたときだけ撮ります。自動では送りません。
+                    撮った画像はそのまま端末に表示されるため、見せたくないものが映る画面は登録しないでください。
+                  </p>
+                  <label className="communication-field">
+                    <span>プレビューURL</span>
+                    <input
+                      type="text"
+                      value={previewUrlDraft}
+                      placeholder="http://localhost:3000"
+                      onChange={(event) => setPreviewUrlDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return;
+                        event.preventDefault();
+                        addPreviewUrl();
+                      }}
+                    />
+                  </label>
+                  <button type="button" className="communication-button-secondary" onClick={addPreviewUrl}>
+                    URLを追加
+                  </button>
+                  {communicationPolicy.previewUrls.length > 0 && (
+                    <ul className="communication-source-list">
+                      {communicationPolicy.previewUrls.map((url) => (
+                        <li key={url}>
+                          <span title={url}>{url}</span>
+                          <button type="button" onClick={() => removePreviewUrl(url)}>削除</button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <aside>
+                    開発中のアプリやブラウザなど、PCで開いているウィンドウは登録なしで一覧に出ます。
+                    作業フォルダに生成されたHTMLも自動で候補に加わります。
+                  </aside>
+                </section>
+
+                <section className="communication-card">
+                  <header><span>04</span><h3>通知するタイミング</h3></header>
                   {([
                     ['turnCompleted', '作業が完了したとき'],
                     ['approvalRequested', '承認が必要になったとき'],
@@ -2533,7 +2640,7 @@ export function App(): React.JSX.Element {
                 </section>
 
                 <section className="communication-card">
-                  <header><span>04</span><h3>送信する内容</h3></header>
+                  <header><span>05</span><h3>送信する内容</h3></header>
                   <label className="communication-field">
                     <span>通知の詳しさ</span>
                     <select

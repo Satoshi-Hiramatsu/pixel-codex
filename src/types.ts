@@ -1,4 +1,5 @@
 import type { TokenUsage } from './costs';
+import type { PreviewSource } from './remote/previewSources';
 import type {
   RemoteGatewayConfig,
   RemoteGatewayStatus,
@@ -22,6 +23,11 @@ export type {
   RemoteApprovalResponse,
   RemoteInstruction,
   RemoteInstructionResult,
+  RemotePreviewFailed,
+  RemotePreviewReady,
+  RemotePreviewRequest,
+  RemotePreviewSourceSummary,
+  RemotePreviewViewport,
   RemoteQuestionRequest,
   RemoteQuestionResponse,
   RemoteStateSnapshot,
@@ -30,6 +36,8 @@ export type {
   WirelessPairingSession,
   WirelessTestSession,
 } from './remote/RemoteProtocol';
+
+export type { PreviewSource, PreviewSourceKind } from './remote/previewSources';
 
 export type AgentStatus =
   | 'idle'
@@ -410,6 +418,8 @@ export interface PixelCodexApi {
   onRemotePairing: (callback: (event: WirelessPairingEvent) => void) => () => void;
   updateRemoteState: (state: RemoteStateSnapshot) => Promise<void>;
   acknowledgeRemoteInstruction: (result: RemoteInstructionResult) => Promise<void>;
+  /** 端末が選べる撮影対象を預けます。`state.snapshot`とは別経路で、変えたときだけ送ります。 */
+  setRemotePreviewSources: (enabled: boolean, sources: PreviewSource[]) => Promise<void>;
   onRemoteStatus: (callback: (status: RemoteGatewayStatus) => void) => () => void;
   onRemoteInstruction: (callback: (instruction: RemoteInstruction) => void) => () => void;
   onRemoteApproval: (callback: (response: RemoteApprovalResponse) => void) => () => void;

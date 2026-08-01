@@ -169,6 +169,56 @@ export interface RemoteInstruction {
   createdAt: number;
 }
 
+export type RemotePreviewViewport = 'mobile' | 'desktop';
+
+export type RemotePreviewSourceKind = 'url' | 'file' | 'window';
+
+/** 端末が選べる撮影対象。選ぶための情報だけを送り、実体はPC側に残します。 */
+export interface RemotePreviewSourceSummary {
+  id: string;
+  kind: RemotePreviewSourceKind;
+  label: string;
+}
+
+export interface RemotePreviewSourcesRequest {
+  messageId: string;
+  deviceId?: string;
+  createdAt: number;
+}
+
+export interface RemotePreviewRequest {
+  messageId: string;
+  deviceId?: string;
+  sourceId: string;
+  viewport: RemotePreviewViewport;
+  createdAt: number;
+}
+
+/**
+ * 撮った画像そのものはWebSocketに載せられません（16KB上限・テキストのみ）。
+ * 端末にはここで受け取ったURLを別途HTTPで取りに行かせます。
+ */
+export interface RemotePreviewReady {
+  messageId: string;
+  previewId: string;
+  /**
+   * Relayからの相対パス。PCがどのアドレスで見えているかは端末しか知らず、端末は
+   * 接続に使っているトークンをすでに持っているので、絶対URLは端末が組み立てます。
+   */
+  path: string;
+  width: number;
+  height: number;
+  bytes: number;
+  expiresAt: number;
+  /** Drive連携が有効なときだけ入ります。LAN外から見るための控えです。 */
+  driveUrl?: string;
+}
+
+export interface RemotePreviewFailed {
+  messageId: string;
+  reason: string;
+}
+
 export type RemoteInstructionOutcome = 'started' | 'queued' | 'rejected' | 'failed';
 
 export interface RemoteInstructionResult {

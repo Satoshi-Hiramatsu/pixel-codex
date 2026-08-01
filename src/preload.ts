@@ -24,6 +24,8 @@ const api: PixelCodexApi = {
   },
   updateRemoteState: (state) => ipcRenderer.invoke('remote:update-state', state),
   acknowledgeRemoteInstruction: (result) => ipcRenderer.invoke('remote:acknowledge', result),
+  setRemotePreviewSources: (enabled, sources) =>
+    ipcRenderer.invoke('remote:set-preview-sources', { enabled, sources }),
   onRemoteStatus: (callback) => {
     const listener = (_event: IpcRendererEvent, value: RemoteGatewayStatus) => callback(value);
     ipcRenderer.on('remote:status', listener);

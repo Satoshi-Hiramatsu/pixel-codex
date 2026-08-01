@@ -1,5 +1,6 @@
 import type { ApprovalRequest } from '../stores/agentStore';
 import type { UserQuestionRequest } from '../types';
+import { normalizePreviewUrls } from './previewSources';
 import type { RemoteApprovalRequest, RemoteQuestionRequest } from './RemoteProtocol';
 
 export type CommunicationContentLevel = 'status-only' | 'summary' | 'final-message';
@@ -21,6 +22,13 @@ export interface CommunicationPolicy {
    * 手元から出せてしまうため、既定では切ってあります。
    */
   allowRemoteApprovals: boolean;
+  /**
+   * 端末からの要求で画面を撮って渡せるようにするか。撮ったものがそのまま端末へ
+   * 届くため、承認と同じく既定では切ってあります。
+   */
+  allowRemotePreview: boolean;
+  /** 撮影対象として登録した開発サーバーなどのURL。 */
+  previewUrls: string[];
   events: CommunicationEvents;
   contentLevel: CommunicationContentLevel;
   hideSensitiveDetails: boolean;
@@ -39,6 +47,8 @@ export const defaultCommunicationPolicy: CommunicationPolicy = {
   autoReconnect: true,
   allowRemoteInstructions: true,
   allowRemoteApprovals: false,
+  allowRemotePreview: false,
+  previewUrls: [],
   events: {
     turnCompleted: true,
     approvalRequested: true,
@@ -68,6 +78,8 @@ function normalizePolicy(value: unknown): CommunicationPolicy {
     autoReconnect: stored.autoReconnect !== false,
     allowRemoteInstructions: stored.allowRemoteInstructions !== false,
     allowRemoteApprovals: stored.allowRemoteApprovals === true,
+    allowRemotePreview: stored.allowRemotePreview === true,
+    previewUrls: normalizePreviewUrls(stored.previewUrls),
     events: {
       turnCompleted: events.turnCompleted !== false,
       approvalRequested: events.approvalRequested !== false,

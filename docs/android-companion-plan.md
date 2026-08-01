@@ -1,5 +1,7 @@
 # Pixel Codex Android コンパニオンアプリ計画書
 
+> 実装状況（V0.3.0）：スマートフォンからの要求で、PCが開発サーバーのURL・作業フォルダ内のHTML・PC上のウィンドウを撮影し、Android側で表示できるようにした。画像はWebSocket（16KB上限・テキストのみ）に載せられないため、Relayに認証付きのHTTP経路`GET /preview/<id>?token=`を追加して受け渡している。既定はオフで、通信室で明示的に許可した場合だけ有効になる。
+>
 > 実装状況（V0.2.1）：ケーブルを使わないペアリング（6桁コード／QR）、Relayポートとトークンの永続化、PCのIP変更に追従するLAN内自動再検出、Androidからの承認・質問回答を実装した。Pixel 9で完全ワイヤレスの実機確認まで完了。残るのは端末鍵、FCM通知、外部Relayでの実運用。
 >
 > V0.2.0での実装：PC通信室、通信担当者、Remote Gateway、開発用Relay、Android Composeアプリ、Pixel 9とのUSB実機テスト。
@@ -20,6 +22,7 @@ Pixel Codexで動作中のCodexをAndroid端末から確認し、**初期版か�
 | 状態・最新メッセージ確認 | 可能 | 可能 |
 | 承認要求への許可・拒否 | 可能（V0.2.1／PCで許可した場合のみ、既定オフ） | 可能 |
 | Codexからの質問への回答 | 可能（同上。秘密の入力を含む質問を除く） | 可能 |
+| 作りかけの画面の確認 | 可能（V0.3.0／PCで許可した場合のみ、既定オフ） | 可能 |
 
 > V0.2.1で承認と質問回答をAndroidへ開放した。当初は「初期版ではPC操作に限定する」としていたが、外出先で承認待ちのまま止まる時間が長かったため前倒しした。既定はオフで、通信室で明示的に許可した場合だけ有効になる。
 
@@ -89,7 +92,7 @@ PCがオフラインの間は新しい指示をRelayへ預けない。時間が�
 - Git操作、コミット、Pushの専用UI
 - 大規模なdiffレビュー
 - Androidで任意ワークスペースを選択して新規スレッドを作成する機能
-- 音声入力、画像・ファイル添付
+- 音声入力、Androidからの画像・ファイル添付（PCから端末への画面プレビューはV0.3.0で実装）
 - 複数ユーザーでの共同操作
 - Codex公式Remote機能とのセッション共有
 - Steerによる実行中ターンへの割り込み
@@ -145,6 +148,7 @@ Pixel Codexのオフィスに「通信室」を追加する。モバイル通信
 - Androidペアリング用QRコード
 - ペアリング済み端末一覧と失効
 - Androidからの指示受付の有効／無効
+- 画面プレビューの送信可否と、撮影対象のURL登録（V0.3.0追加）
 - 通知するイベント
 - 通知に含める内容のレベル
 - 最近の送受信履歴
@@ -177,6 +181,10 @@ interface CommunicationPolicy {
   allowRemoteInstructions: boolean;
   /** V0.2.1追加。承認の可否と質問への回答を端末から返せるようにするか。 */
   allowRemoteApprovals: boolean;
+  /** V0.3.0追加。端末からの要求で画面を撮って渡せるようにするか。 */
+  allowRemotePreview: boolean;
+  /** V0.3.0追加。撮影対象として登録した開発サーバーなどのURL。 */
+  previewUrls: string[];
   events: {
     turnCompleted: boolean;
     approvalRequested: boolean;
@@ -197,11 +205,13 @@ src/remote/
 ├── RemoteGateway.ts       WebSocket接続と再接続
 ├── RemoteProtocol.ts      メッセージ型、バージョン管理
 ├── RemoteStateStore.ts    モバイル向け最小状態
-├── RemoteCommandGuard.ts  操作、スレッド、期限の検証
+├── RemoteCommandGuard.ts  操作、スレッド、期限、送信間隔の検証
 ├── RemoteQueue.ts         Queue指示の保持と実行
 ├── PairingManager.ts      QR、端末鍵、失効管理
 ├── CommunicationPolicy.ts 通知タイミングと内容設定
-└── MessageFormatter.ts    決定的テンプレートとマスキング
+├── MessageFormatter.ts    決定的テンプレートとマスキング
+├── PreviewCapture.ts      画面の撮影とJPEG化（V0.3.0）
+└── previewSources.ts      撮影対象の正規化と検証（V0.3.0）
 ```
 
 既存の`codex.on('event')`をRemote Gatewayにも購読させる。既存Rendererの状態管理は初期段階では変更せず、モバイルに必要な最小状態だけを`RemoteStateStore`で保持する。
@@ -319,6 +329,8 @@ app/
 - `state.snapshot.request`
 - `approval.respond`（V0.2.1追加。`accept`／`decline`のみ）
 - `question.respond`（V0.2.1追加。12件・1000文字まで）
+- `preview.sources.request`（V0.3.0追加。撮影対象の一覧要求。2秒に1回まで）
+- `preview.request`（V0.3.0追加。`sourceId`と`viewport`のみ。5秒に1回まで）
 
 `instruction.submit`を受信したデスクトップGatewayが、現在の状態に応じて`startThread`、`sendTask`、`RemoteQueue`のいずれかへ振り分ける。AndroidはCodexの内部メソッドを指定しない。
 
@@ -336,6 +348,24 @@ app/
 - `error.occurred`
 - `command.acknowledged`
 - `host.status`
+- `preview.sources`（V0.3.0追加）
+- `preview.ready`（V0.3.0追加。画像そのものではなく、Relayからの相対パスだけを返す）
+- `preview.failed`（V0.3.0追加）
+
+### 画面プレビュー（V0.3.0）
+
+撮った画像はWebSocketに載せない。Relayの`maxPayload`は16KBでバイナリも拒否するため、
+1枚を100通以上に割ることになり経路として成立しないからである。代わりにRelayのHTTP側へ
+`GET /preview/<id>?token=`を追加し、端末はそこから取りに行く。
+
+- 撮影対象は**PCが登録した一覧のidだけ**を端末が選ぶ。端末からURLやパスは受け取らない
+- `preview.ready`が返すのはRelayからの**相対パス**だけ。PCがどのアドレスで見えているかは
+  端末しか知らず、端末は接続に使っているトークンを既に持っているため、絶対URLは端末が組み立てる
+- `previewId`は`randomUUID`。有効期限は10分で、過ぎたら実ファイルごと削除する
+- 撮影はスマートフォンから要求されたときだけ実行する。ターン完了時の自動送信は行わない
+- 撮影対象の一覧は`state.snapshot`には含めない。あれは返答が1文字進むたびに端末へ流れる
+  経路であり、滅多に変わらない選択肢を混ぜても通信量が増えるだけである
+- 1枚は幅1080pxまでのJPEG（品質72）へ落とす。実測でおおむね50〜150KB
 
 各コマンドは`messageId`で重複排除する。モバイル側では送信済み、PC到達済み、Codex受付済み、完了／失敗を区別して表示する。
 
@@ -530,16 +560,17 @@ Androidからの任意シェル、任意ファイル読み取り、任意JSON-RP
 
 ## 14. MVP後の候補
 
-優先度順に検討する。承認と質問回答はV0.2.1で実装済みのため一覧から外した。
+優先度順に検討する。承認と質問回答はV0.2.1、画面プレビューはV0.3.0で実装済みのため一覧から外した。
 
 1. Steer、停止
 2. Androidで複数の許可済みワークスペースから対象を選択
-3. 画像・ログファイルの添付
-4. 変更ファイル一覧と軽量diffレビュー
-5. GitHub PR／CI状態の表示
-6. 音声入力
-7. 複数PC・複数ユーザー
-8. エンドツーエンド暗号化の強化と鍵ローテーション
+3. プレビュー画像のGoogle Driveへのアップロード（外部Relayが無い間、LAN外から見る手段）
+4. Androidからの画像・ログファイルの添付
+5. 変更ファイル一覧と軽量diffレビュー
+6. GitHub PR／CI状態の表示
+7. 音声入力
+8. 複数PC・複数ユーザー
+9. エンドツーエンド暗号化の強化と鍵ローテーション
 
 ## 15. 着手時に確定する事項
 

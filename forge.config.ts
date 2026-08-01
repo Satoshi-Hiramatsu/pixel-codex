@@ -13,6 +13,8 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     executableName: 'PixelCodex',
+    extraResource: ['assets/branding/pixel-codex-icon.png'],
+    icon: 'assets/branding/pixel-codex-icon.ico',
     win32metadata: {
       CompanyName: 'Pixel Codex',
       FileDescription: 'Pixel Codex agent office',
@@ -26,6 +28,7 @@ const config: ForgeConfig = {
     new MakerSquirrel({
       name: 'pixel_codex',
       setupExe: 'PixelCodexSetup.exe',
+      setupIcon: 'assets/branding/pixel-codex-icon.ico',
     }),
     new MakerZIP({}, ['win32']),
   ],
