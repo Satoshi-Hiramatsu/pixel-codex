@@ -3,10 +3,12 @@ import { EventEmitter } from 'node:events';
 import { RemoteCommandGuard } from './RemoteCommandGuard';
 import {
   remoteEnvelope,
+  type RemoteApprovalResponse,
   type RemoteGatewayConfig,
   type RemoteGatewayStatus,
   type RemoteInstruction,
   type RemoteInstructionResult,
+  type RemoteQuestionResponse,
   type RemoteStateSnapshot,
 } from './RemoteProtocol';
 
@@ -138,7 +140,7 @@ export class RemoteGateway extends EventEmitter {
     }
 
     const result = this.guard.validate(message, this.hostId);
-    if (!result.instruction) {
+    if (!result.command) {
       this.send('command.acknowledged', {
         messageId: typeof envelope?.messageId === 'string' ? envelope.messageId : '',
         outcome: 'rejected',
@@ -147,7 +149,16 @@ export class RemoteGateway extends EventEmitter {
       });
       return;
     }
-    this.emit('instruction', result.instruction satisfies RemoteInstruction);
+    const { command } = result;
+    if (command.kind === 'instruction') {
+      this.emit('instruction', command.instruction satisfies RemoteInstruction);
+      return;
+    }
+    if (command.kind === 'approval') {
+      this.emit('approval', command.approval satisfies RemoteApprovalResponse);
+      return;
+    }
+    this.emit('question', command.question satisfies RemoteQuestionResponse);
   }
 
   private send(type: string, payload: unknown, messageId?: string): void {

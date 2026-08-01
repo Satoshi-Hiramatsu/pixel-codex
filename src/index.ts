@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import started from 'electron-squirrel-startup';
 import fs from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -33,6 +34,9 @@ import type {
   SkillScope,
   ThreadOptions,
   UsbTestSession,
+  WirelessPairingEvent,
+  WirelessPairingSession,
+  WirelessTestSession,
 } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -52,19 +56,64 @@ const codex = new CodexClient();
 let remoteGateway: RemoteGateway | undefined;
 const developmentRelay = new DevelopmentRelay();
 
-async function loadRemoteHostId(): Promise<string> {
-  const identityPath = path.join(app.getPath('userData'), 'remote-host.json');
+/**
+ * PCの身元とRelayトークン。どちらも保存しておくことで、一度ペアリングした
+ * Android端末はPCを再起動しても同じ宛先へつなぎ直せます。
+ */
+interface RemoteIdentity {
+  hostId: string;
+  relayToken: string;
+  /** 一度でもペアリングに成功したか。起動時にRelayを出すかどうかの判断に使います。 */
+  paired?: boolean;
+}
+
+function remoteIdentityPath(): string {
+  return path.join(app.getPath('userData'), 'remote-host.json');
+}
+
+async function markRemotePaired(): Promise<void> {
+  if (!remoteIdentity || remoteIdentity.paired) return;
+  remoteIdentity = { ...remoteIdentity, paired: true };
+  await fs.writeFile(remoteIdentityPath(), JSON.stringify(remoteIdentity), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+}
+
+let remoteIdentity: RemoteIdentity | undefined;
+
+async function loadRemoteIdentity(): Promise<RemoteIdentity> {
+  let hostId = '';
+  let relayToken = '';
+  let paired = false;
   try {
-    const stored = JSON.parse(await fs.readFile(identityPath, 'utf8')) as { hostId?: unknown };
+    const stored = JSON.parse(await fs.readFile(remoteIdentityPath(), 'utf8')) as {
+      hostId?: unknown;
+      relayToken?: unknown;
+      paired?: unknown;
+    };
     if (typeof stored.hostId === 'string' && /^[a-f0-9-]{36}$/i.test(stored.hostId)) {
-      return stored.hostId;
+      hostId = stored.hostId;
     }
+    if (typeof stored.relayToken === 'string' && /^[a-f0-9]{64}$/i.test(stored.relayToken)) {
+      relayToken = stored.relayToken;
+    }
+    paired = stored.paired === true;
   } catch {
     // The first launch has no remote identity yet.
   }
-  const hostId = randomUUID();
-  await fs.writeFile(identityPath, JSON.stringify({ hostId }), { encoding: 'utf8', mode: 0o600 });
-  return hostId;
+  const identity: RemoteIdentity = {
+    hostId: hostId || randomUUID(),
+    relayToken: relayToken || `${randomUUID()}${randomUUID()}`.replace(/-/g, ''),
+    paired,
+  };
+  if (identity.hostId !== hostId || identity.relayToken !== relayToken) {
+    await fs.writeFile(remoteIdentityPath(), JSON.stringify(identity), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  }
+  return identity;
 }
 
 async function resolveWorkspaceItem(workspace: string, itemPath = ''): Promise<{
@@ -134,9 +183,21 @@ async function adbExecutable(): Promise<string> {
   throw new Error('Android SDKのadbが見つかりません。Android StudioでPlatform Toolsを導入してください。');
 }
 
+/** ファイアウォールの許可を1度で済ませるため、Relayはこのポートから順に空きを探します。 */
+const defaultRelayPort = 57170;
+
+function relayStartOptions(bindHost: string) {
+  return {
+    bindHost,
+    token: remoteIdentity?.relayToken,
+    preferredPort: defaultRelayPort,
+    hostId: remoteIdentity?.hostId,
+  };
+}
+
 async function startUsbRemoteTest(): Promise<UsbTestSession> {
   if (!remoteGateway) throw new Error('Remote Gatewayが初期化されていません。');
-  const relay = await developmentRelay.start();
+  const relay = await developmentRelay.start(relayStartOptions('127.0.0.1'));
   const adb = await adbExecutable();
   const { stdout } = await execFileAsync(adb, ['devices', '-l'], { timeout: 10_000, windowsHide: true });
   const devices = stdout
@@ -156,6 +217,10 @@ async function startUsbRemoteTest(): Promise<UsbTestSession> {
     windowsHide: true,
   });
   remoteGateway.configure({ enabled: true, relayUrl: relay.relayUrl, autoReconnect: true });
+  await execFileAsync(adb, ['-s', deviceSerial, 'shell', 'am', 'force-stop', 'jp.pixelcodex.companion'], {
+    timeout: 10_000,
+    windowsHide: true,
+  });
   await execFileAsync(adb, [
     '-s', deviceSerial,
     'shell', 'am', 'start',
@@ -165,6 +230,114 @@ async function startUsbRemoteTest(): Promise<UsbTestSession> {
     '--ez', 'autoConnect', 'true',
   ], { timeout: 15_000, windowsHide: true });
   return { hostId: remoteGateway.hostId, relayUrl: relay.relayUrl, deviceSerial };
+}
+
+function privateLanAddress(): string {
+  const candidates = Object.entries(networkInterfaces()).flatMap(([name, addresses]) =>
+    (addresses ?? []).flatMap((address) => {
+      if (address.internal || address.family !== 'IPv4') return [];
+      const privateAddress = /^10\./.test(address.address)
+        || /^192\.168\./.test(address.address)
+        || (() => {
+          const match = /^172\.(\d+)\./.exec(address.address);
+          const second = Number(match?.[1]);
+          return second >= 16 && second <= 31;
+        })();
+      if (!privateAddress) return [];
+      const preferred = /wi-?fi|wlan|wireless/i.test(name) ? 0 : 1;
+      return [{ address: address.address, preferred }];
+    }),
+  );
+  candidates.sort((left, right) => left.preferred - right.preferred);
+  const selected = candidates[0]?.address;
+  if (!selected) {
+    throw new Error('同一Wi-Fiで利用できるPCのプライベートIPv4アドレスを確認できませんでした');
+  }
+  return selected;
+}
+
+/** Wi-Fiが無い場所でも画面を開けるよう、見つからないときは空文字にします。 */
+function lanAddressOrEmpty(): string {
+  try {
+    return privateLanAddress();
+  } catch {
+    return '';
+  }
+}
+
+async function startWirelessRemoteTest(): Promise<WirelessTestSession> {
+  if (!remoteGateway) throw new Error('Remote Gatewayが初期化されていません');
+  const lanAddress = privateLanAddress();
+  const relay = await developmentRelay.start(relayStartOptions('0.0.0.0'));
+  const adb = await adbExecutable();
+  const { stdout } = await execFileAsync(adb, ['devices', '-l'], { timeout: 10_000, windowsHide: true });
+  const devices = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /\sdevice(?:\s|$)/.test(line))
+    .map((line) => line.split(/\s+/)[0]);
+  if (!devices.length) {
+    throw new Error('初回設定を渡すため、USBデバッグを許可したAndroid端末を接続してください');
+  }
+  if (devices.length > 1) {
+    throw new Error('Android端末が複数あります。テストする端末だけをUSB接続してください');
+  }
+  const deviceSerial = devices[0];
+  const androidRelayUrl = `ws://${lanAddress}:${relay.port}/relay?token=${relay.token}`;
+  remoteGateway.configure({ enabled: true, relayUrl: relay.relayUrl, autoReconnect: true });
+  await execFileAsync(adb, ['-s', deviceSerial, 'shell', 'am', 'force-stop', 'jp.pixelcodex.companion'], {
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  await execFileAsync(adb, [
+    '-s', deviceSerial,
+    'shell', 'am', 'start',
+    '-n', 'jp.pixelcodex.companion/.MainActivity',
+    '--es', 'relayUrl', androidRelayUrl,
+    '--es', 'hostId', remoteGateway.hostId,
+    '--ez', 'autoConnect', 'true',
+  ], { timeout: 15_000, windowsHide: true });
+  return {
+    hostId: remoteGateway.hostId,
+    relayUrl: relay.relayUrl,
+    androidRelayUrl,
+    lanAddress,
+    deviceSerial,
+  };
+}
+
+/**
+ * ケーブルを一切使わないペアリング。PCは待ち受けと6桁コードを用意するだけで、
+ * 端末がそのコードを送ってきたらRelayトークンを渡します。
+ */
+async function startWirelessPairing(): Promise<WirelessPairingSession> {
+  if (!remoteGateway) throw new Error('Remote Gatewayが初期化されていません');
+  const lanAddress = privateLanAddress();
+  const relay = await developmentRelay.start(relayStartOptions('0.0.0.0'));
+  remoteGateway.configure({ enabled: true, relayUrl: relay.relayUrl, autoReconnect: true });
+  const ticket = developmentRelay.openPairing(remoteGateway.hostId);
+  return {
+    hostId: remoteGateway.hostId,
+    lanAddress,
+    port: relay.port,
+    code: ticket.code,
+    expiresAt: ticket.expiresAt,
+    relayUrl: relay.relayUrl,
+  };
+}
+
+/**
+ * 一度でもペアリング済みなら、起動時にRelayをLANへ出しておきます。これがないと
+ * 端末はPCを再起動するたびにペアリングし直すことになります。
+ */
+async function resumeWirelessRelay(): Promise<void> {
+  if (!remoteIdentity?.paired) return;
+  try {
+    privateLanAddress();
+    await developmentRelay.start(relayStartOptions('0.0.0.0'));
+  } catch {
+    // Wi-Fiが無い場所での起動。画面からもう一度ペアリングすれば復帰できます。
+  }
 }
 
 /** 画面から届いた置き場所の指定。知らない値はグローバル扱いにします。 */
@@ -191,6 +364,7 @@ function registerIpc(): void {
   ipcMain.handle('remote:host-info', () => ({
     hostId: remoteGateway?.hostId ?? '',
     status: remoteGateway?.getStatus() ?? { phase: 'disabled', label: '通信停止中' },
+    lanAddress: lanAddressOrEmpty(),
   }));
   ipcMain.handle('remote:configure', (_event, config: RemoteGatewayConfig) =>
     remoteGateway?.configure({
@@ -200,6 +374,11 @@ function registerIpc(): void {
     }) ?? { phase: 'error', label: 'Gateway未初期化' },
   );
   ipcMain.handle('remote:start-usb-test', () => startUsbRemoteTest());
+  ipcMain.handle('remote:start-wireless-test', () => startWirelessRemoteTest());
+  ipcMain.handle('remote:start-pairing', () => startWirelessPairing());
+  ipcMain.handle('remote:cancel-pairing', () => {
+    developmentRelay.cancelPairing();
+  });
   ipcMain.handle('remote:update-state', (_event, state: RemoteStateSnapshot) => {
     remoteGateway?.updateState(state);
   });
@@ -409,10 +588,18 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   setUserDataRoot(app.getPath('userData'));
-  remoteGateway = new RemoteGateway(await loadRemoteHostId());
+  remoteIdentity = await loadRemoteIdentity();
+  remoteGateway = new RemoteGateway(remoteIdentity.hostId);
   remoteGateway.on('status', (status) => broadcast('remote:status', status));
   remoteGateway.on('instruction', (instruction) => broadcast('remote:instruction', instruction));
+  remoteGateway.on('approval', (response) => broadcast('remote:approval', response));
+  remoteGateway.on('question', (response) => broadcast('remote:question', response));
+  developmentRelay.on('pairing', (event: WirelessPairingEvent) => {
+    if (event.phase === 'paired') void markRemotePaired();
+    broadcast('remote:pairing', event);
+  });
   registerIpc();
+  await resumeWirelessRelay();
   createWindow();
 });
 app.on('before-quit', () => {

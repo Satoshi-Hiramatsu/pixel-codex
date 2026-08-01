@@ -51,6 +51,21 @@ Codex CLI の検出に `where.exe` と `codex.exe`、他セッションの確認
 - `fonts.googleapis.com` / `fonts.gstatic.com`（レトロフォント DotGothic16）。
   遮断されていても MS Gothic へフォールバックして動作します。
 
+### Android 連携を使う場合（任意）
+
+Android コンパニオンアプリを使うときだけ必要です。使わない場合は待ち受けを開きません。
+
+- **受信ポート TCP 57170**（使用中なら 57179 まで順に探索）。同一ネットワークの
+  Android 端末からの接続を受けます。インターネット側へ開ける必要はありません。
+- 初回起動時に Windows Defender Firewall の確認が出ます。**プライベートネットワークを許可**
+  してください。誤って `アクセスを許可しない` を押すとブロック規則が残り、以後の接続が
+  すべて 10 秒でタイムアウトします。Windows ではブロック規則が許可規則より優先されるため、
+  規則の削除が必要になります（復旧手順は
+  [android-companion/README.md](../android-companion/README.md)）。
+- PC と端末が同一ネットワークにいる必要があります。ゲスト SSID やクライアント分離が
+  有効なアクセスポイントでは届きません。
+- 通信は同一ネットワーク内の平文 `ws://` です。公衆 Wi-Fi では使用しないでください。
+
 ## 配布時に伝えること
 
 - コード署名をしていないため、初回起動時に SmartScreen の
@@ -69,7 +84,7 @@ Codex CLI の検出に `where.exe` と `codex.exe`、他セッションの確認
 
 | 場所 | 中身 |
 | --- | --- |
-| `%APPDATA%\Pixel Codex\` | 設定、雇用情報、AIモデルの選択、接続したフォルダの履歴、グローバルスキル（`skills/*.md`） |
+| `%APPDATA%\Pixel Codex\` | 設定、雇用情報、AIモデルの選択、接続したフォルダの履歴、グローバルスキル（`skills/*.md`）、Android連携の識別子とRelayトークン（`remote-host.json`） |
 | `<作業フォルダ>\.pixel-codex\` | セーブ情報（`save.json`）、プロジェクト専用スキル（`skills/*.md`） |
 | 一時フォルダ | 指示に添えた画像。アプリ終了時に削除されます |
 

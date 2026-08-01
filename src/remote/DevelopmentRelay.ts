@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import http from 'node:http';
 
 import WebSocket, { type RawData, WebSocketServer } from 'ws';
@@ -17,27 +18,82 @@ export interface DevelopmentRelayInfo {
   port: number;
   token: string;
   relayUrl: string;
+  bindHost: string;
 }
+
+export interface DevelopmentRelayOptions {
+  bindHost?: string;
+  /** 保存済みトークン。渡さないと毎回作り直しになり、端末の再ペアリングが必要になります。 */
+  token?: string;
+  /** 最初に試すポート。使用中なら +9 まで順に探します。 */
+  preferredPort?: number;
+  /** `/health` で名乗るPCの身元。端末がLAN内からPCを探し直すのに使います。 */
+  hostId?: string;
+}
+
+export type PairingPhase = 'open' | 'paired' | 'expired' | 'cancelled' | 'failed';
+
+export interface PairingEvent {
+  phase: PairingPhase;
+  deviceName?: string;
+  detail?: string;
+}
+
+export interface PairingTicket {
+  code: string;
+  expiresAt: number;
+}
+
+interface PairingWindow {
+  code: string;
+  hostId: string;
+  expiresAt: number;
+  attemptsLeft: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** 6桁コードの総当たりを防ぐ回数。使い切るとその場でペアリングを閉じます。 */
+const maxPairingAttempts = 5;
+const portScanRange = 10;
 
 function send(socket: WebSocket, value: unknown): void {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
 }
 
-export class DevelopmentRelay {
+/**
+ * 開発用のRelay。ポートとトークンを呼び出し側から渡せるので、一度ペアリングした
+ * Android端末はPCを再起動しても同じ宛先へつなぎ直せます。
+ */
+export class DevelopmentRelay extends EventEmitter {
   private server?: http.Server;
   private websocketServer?: WebSocketServer;
   private info?: DevelopmentRelayInfo;
   private heartbeat?: ReturnType<typeof setInterval>;
+  private pairing?: PairingWindow;
   private readonly hosts = new Map<string, RelaySocket>();
   private readonly devices = new Map<string, Set<RelaySocket>>();
 
-  async start(): Promise<DevelopmentRelayInfo> {
-    if (this.info) return this.info;
-    const token = `${randomUUID()}${randomUUID()}`.replace(/-/g, '');
+  async start(options: DevelopmentRelayOptions = {}): Promise<DevelopmentRelayInfo> {
+    const bindHost = options.bindHost ?? '127.0.0.1';
+    if (this.info && this.info.bindHost === bindHost) {
+      if (!options.token || options.token === this.info.token) return this.info;
+    }
+    if (this.info) this.stop();
+    const token = options.token || `${randomUUID()}${randomUUID()}`.replace(/-/g, '');
     const server = http.createServer((request, response) => {
-      if (request.url === '/health') {
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ ok: true, hosts: this.hosts.size }));
+      if (request.method === 'GET' && request.url === '/health') {
+        response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        // hostIdは宛先の識別子で、接続にはトークンが要ります。名乗っても接続はできません。
+        response.end(JSON.stringify({
+          ok: true,
+          hosts: this.hosts.size,
+          pairing: Boolean(this.pairing),
+          hostId: options.hostId ?? '',
+        }));
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/pair') {
+        this.handlePairRequest(request, response);
         return;
       }
       response.writeHead(404).end();
@@ -57,30 +113,146 @@ export class DevelopmentRelay {
     });
     websocketServer.on('connection', (websocket) => this.accept(websocket as RelaySocket));
 
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => {
-        server.off('error', reject);
-        resolve();
-      });
-    });
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('USBテストRelayを開始できませんでした');
+    const port = await this.listen(server, bindHost, options.preferredPort);
 
     this.server = server;
     this.websocketServer = websocketServer;
     this.info = {
-      port: address.port,
+      port,
       token,
-      relayUrl: `ws://127.0.0.1:${address.port}/relay?token=${token}`,
+      relayUrl: `ws://127.0.0.1:${port}/relay?token=${token}`,
+      bindHost,
     };
     this.heartbeat = setInterval(() => this.ping(), 30_000);
     return this.info;
   }
 
+  /**
+   * 希望のポートから順に空きを探します。固定ポートで待てると、端末が保存した
+   * 宛先をそのまま再利用できます。全部埋まっていたらOSに任せます。
+   */
+  private async listen(server: http.Server, bindHost: string, preferredPort?: number): Promise<number> {
+    const candidates = preferredPort
+      ? Array.from({ length: portScanRange }, (_unused, index) => preferredPort + index).concat(0)
+      : [0];
+    for (const candidate of candidates) {
+      const bound = await new Promise<boolean>((resolve, reject) => {
+        const onError = (error: NodeJS.ErrnoException) => {
+          server.off('listening', onListening);
+          if (error.code === 'EADDRINUSE' || error.code === 'EACCES') resolve(false);
+          else reject(error);
+        };
+        const onListening = () => {
+          server.off('error', onError);
+          resolve(true);
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(candidate, bindHost);
+      });
+      if (!bound) continue;
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('開発用Relayを開始できませんでした');
+      return address.port;
+    }
+    throw new Error('開発用Relayに使える空きポートが見つかりませんでした');
+  }
+
+  /**
+   * 端末に見せる6桁コードを発行します。期限切れか規定回数の失敗で自動的に閉じます。
+   */
+  openPairing(hostId: string, ttlMs = 180_000): PairingTicket {
+    if (!this.info) throw new Error('Relayが起動していません');
+    this.closePairing('cancelled');
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    const expiresAt = Date.now() + ttlMs;
+    this.pairing = {
+      code,
+      hostId,
+      expiresAt,
+      attemptsLeft: maxPairingAttempts,
+      timer: setTimeout(() => this.closePairing('expired'), ttlMs),
+    };
+    this.emit('pairing', { phase: 'open' } satisfies PairingEvent);
+    return { code, expiresAt };
+  }
+
+  cancelPairing(): void {
+    this.closePairing('cancelled');
+  }
+
+  private closePairing(phase: PairingPhase, deviceName?: string, detail?: string): void {
+    const pairing = this.pairing;
+    this.pairing = undefined;
+    if (!pairing) return;
+    clearTimeout(pairing.timer);
+    this.emit('pairing', { phase, deviceName, detail } satisfies PairingEvent);
+  }
+
+  private handlePairRequest(request: http.IncomingMessage, response: http.ServerResponse): void {
+    const reply = (status: number, body: Record<string, unknown>): void => {
+      response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify(body));
+    };
+    const chunks: Buffer[] = [];
+    let size = 0;
+    request.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > 2_048) {
+        reply(413, { error: 'request too large' });
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => {
+      if (!response.writable || response.writableEnded) return;
+      const pairing = this.pairing;
+      const relay = this.info;
+      if (!pairing || !relay) {
+        reply(409, { error: 'PC側でペアリングが開始されていません' });
+        return;
+      }
+      if (Date.now() > pairing.expiresAt) {
+        this.closePairing('expired');
+        reply(410, { error: 'ペアリングの有効期限が切れました' });
+        return;
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      } catch {
+        reply(400, { error: 'invalid json' });
+        return;
+      }
+      const provided = typeof body.code === 'string' ? body.code.replace(/\D/g, '') : '';
+      if (!codeMatches(pairing.code, provided)) {
+        pairing.attemptsLeft -= 1;
+        if (pairing.attemptsLeft <= 0) {
+          this.closePairing('failed', undefined, 'コードを規定回数まちがえたため中止しました');
+          reply(429, { error: 'コードの入力回数が上限に達しました' });
+          return;
+        }
+        reply(403, { error: 'ペアリングコードが違います', attemptsLeft: pairing.attemptsLeft });
+        return;
+      }
+      const deviceName = typeof body.deviceName === 'string'
+        ? body.deviceName.replace(/[\r\n]/g, '').slice(0, 64)
+        : '';
+      const authority = requestAuthority(request, relay.port);
+      reply(200, {
+        token: relay.token,
+        hostId: pairing.hostId,
+        relayUrl: `ws://${authority}/relay?token=${relay.token}`,
+      });
+      this.closePairing('paired', deviceName || 'Android端末');
+    });
+  }
+
   stop(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
+    this.closePairing('cancelled');
     for (const socket of this.websocketServer?.clients ?? []) socket.terminate();
     this.websocketServer?.close();
     this.server?.close();
@@ -191,4 +363,25 @@ export class DevelopmentRelay {
       socket.ping();
     }
   }
+}
+
+/** 桁数の違いで早く返らないよう、長さを揃えてから比べます。 */
+function codeMatches(expected: string, provided: string): boolean {
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  const paddedProvided = provided.padEnd(expected.length, ' ').slice(0, expected.length);
+  const matched = timingSafeEqual(expectedBuffer, Buffer.from(paddedProvided, 'utf8'));
+  return matched && provided.length === expected.length;
+}
+
+/**
+ * 端末が実際に叩いてきた宛先。ここからws://を組み立てると、PCが複数の
+ * ネットワークにつながっていても端末から見える方のアドレスを返せます。
+ */
+function requestAuthority(request: http.IncomingMessage, fallbackPort: number): string {
+  const header = request.headers.host ?? '';
+  if (/^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(header)) {
+    return header.includes(':') ? header : `${header}:${fallbackPort}`;
+  }
+  const local = request.socket.localAddress ?? '127.0.0.1';
+  return `${local}:${request.socket.localPort ?? fallbackPort}`;
 }

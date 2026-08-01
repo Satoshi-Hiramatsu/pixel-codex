@@ -1,3 +1,7 @@
+import type { ApprovalRequest } from '../stores/agentStore';
+import type { UserQuestionRequest } from '../types';
+import type { RemoteApprovalRequest, RemoteQuestionRequest } from './RemoteProtocol';
+
 export type CommunicationContentLevel = 'status-only' | 'summary' | 'final-message';
 
 export interface CommunicationEvents {
@@ -12,6 +16,11 @@ export interface CommunicationPolicy {
   relayUrl: string;
   autoReconnect: boolean;
   allowRemoteInstructions: boolean;
+  /**
+   * 端末から承認の可否と質問への回答を返せるようにするか。コマンド実行の許可を
+   * 手元から出せてしまうため、既定では切ってあります。
+   */
+  allowRemoteApprovals: boolean;
   events: CommunicationEvents;
   contentLevel: CommunicationContentLevel;
   hideSensitiveDetails: boolean;
@@ -29,6 +38,7 @@ export const defaultCommunicationPolicy: CommunicationPolicy = {
   relayUrl: '',
   autoReconnect: true,
   allowRemoteInstructions: true,
+  allowRemoteApprovals: false,
   events: {
     turnCompleted: true,
     approvalRequested: true,
@@ -57,6 +67,7 @@ function normalizePolicy(value: unknown): CommunicationPolicy {
     relayUrl: typeof stored.relayUrl === 'string' ? stored.relayUrl.trim() : '',
     autoReconnect: stored.autoReconnect !== false,
     allowRemoteInstructions: stored.allowRemoteInstructions !== false,
+    allowRemoteApprovals: stored.allowRemoteApprovals === true,
     events: {
       turnCompleted: events.turnCompleted !== false,
       approvalRequested: events.approvalRequested !== false,
@@ -101,18 +112,61 @@ export function mergeCommunicationPolicy(
   });
 }
 
+function redactSensitive(text: string, policy: CommunicationPolicy): string {
+  if (!policy.hideSensitiveDetails) return text;
+  return text
+    .replace(/\b[A-Za-z]:\\[^\s"'<>|]+/g, '[ファイルパス]')
+    .replace(/\/(?:Users|home)\/[^\s"'<>|]+/g, '[ファイルパス]')
+    .replace(/\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, '$1=[非表示]');
+}
+
 export function formatCommunicationMessage(
   text: string | undefined,
   policy: CommunicationPolicy,
 ): string | undefined {
   if (!text || policy.contentLevel === 'status-only') return undefined;
-  let formatted = text.trim();
-  if (policy.hideSensitiveDetails) {
-    formatted = formatted
-      .replace(/\b[A-Za-z]:\\[^\s"'<>|]+/g, '[ファイルパス]')
-      .replace(/\/(?:Users|home)\/[^\s"'<>|]+/g, '[ファイルパス]')
-      .replace(/\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, '$1=[非表示]');
-  }
+  const formatted = redactSensitive(text.trim(), policy);
   const limit = policy.contentLevel === 'summary' ? 240 : 1_000;
   return formatted.slice(0, limit);
+}
+
+/**
+ * 承認待ちを端末へ渡せる形にします。可否を委ねない設定なら何も渡しません。
+ * 実行するコマンド自体は判断材料なので、機微情報を隠す設定のときだけ伏せます。
+ */
+export function formatRemoteApproval(
+  approval: ApprovalRequest | undefined,
+  policy: CommunicationPolicy,
+): RemoteApprovalRequest | undefined {
+  if (!approval || !policy.allowRemoteApprovals) return undefined;
+  return {
+    requestId: String(approval.requestId),
+    kind: approval.kind,
+    title: approval.title.slice(0, 200),
+    headline: redactSensitive(approval.headline, policy).slice(0, 400),
+    bullets: approval.bullets.slice(0, 6).map((bullet) => redactSensitive(bullet, policy).slice(0, 200)),
+    command: approval.command ? redactSensitive(approval.command, policy).slice(0, 600) : undefined,
+    cwd: approval.cwd ? redactSensitive(approval.cwd, policy).slice(0, 300) : undefined,
+    risk: approval.risk,
+    riskLabel: approval.riskLabel.slice(0, 60),
+  };
+}
+
+export function formatRemoteQuestion(
+  request: UserQuestionRequest | undefined,
+  policy: CommunicationPolicy,
+): RemoteQuestionRequest | undefined {
+  if (!request || !policy.allowRemoteApprovals) return undefined;
+  return {
+    requestId: String(request.requestId),
+    questions: request.questions.slice(0, 12).map((question) => ({
+      id: question.id,
+      header: question.header.slice(0, 80),
+      // 秘密扱いの入力は端末へ出しません。PCで答えてもらいます。
+      question: question.isSecret
+        ? '（秘密の入力のためPCで回答してください）'
+        : redactSensitive(question.question, policy).slice(0, 600),
+      options: (question.options ?? []).slice(0, 6).map((option) => option.label.slice(0, 80)),
+    })),
+  };
 }

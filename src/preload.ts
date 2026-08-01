@@ -3,7 +3,10 @@ import type {
   CodexEvent,
   PixelCodexApi,
   RemoteGatewayStatus,
+  RemoteApprovalResponse,
   RemoteInstruction,
+  RemoteQuestionResponse,
+  WirelessPairingEvent,
 } from './types';
 
 const api: PixelCodexApi = {
@@ -11,6 +14,14 @@ const api: PixelCodexApi = {
   getRemoteHostInfo: () => ipcRenderer.invoke('remote:host-info'),
   configureRemoteGateway: (config) => ipcRenderer.invoke('remote:configure', config),
   startUsbRemoteTest: () => ipcRenderer.invoke('remote:start-usb-test'),
+  startWirelessRemoteTest: () => ipcRenderer.invoke('remote:start-wireless-test'),
+  startWirelessPairing: () => ipcRenderer.invoke('remote:start-pairing'),
+  cancelWirelessPairing: () => ipcRenderer.invoke('remote:cancel-pairing'),
+  onRemotePairing: (callback) => {
+    const listener = (_event: IpcRendererEvent, value: WirelessPairingEvent) => callback(value);
+    ipcRenderer.on('remote:pairing', listener);
+    return () => ipcRenderer.removeListener('remote:pairing', listener);
+  },
   updateRemoteState: (state) => ipcRenderer.invoke('remote:update-state', state),
   acknowledgeRemoteInstruction: (result) => ipcRenderer.invoke('remote:acknowledge', result),
   onRemoteStatus: (callback) => {
@@ -22,6 +33,16 @@ const api: PixelCodexApi = {
     const listener = (_event: IpcRendererEvent, value: RemoteInstruction) => callback(value);
     ipcRenderer.on('remote:instruction', listener);
     return () => ipcRenderer.removeListener('remote:instruction', listener);
+  },
+  onRemoteApproval: (callback) => {
+    const listener = (_event: IpcRendererEvent, value: RemoteApprovalResponse) => callback(value);
+    ipcRenderer.on('remote:approval', listener);
+    return () => ipcRenderer.removeListener('remote:approval', listener);
+  },
+  onRemoteQuestion: (callback) => {
+    const listener = (_event: IpcRendererEvent, value: RemoteQuestionResponse) => callback(value);
+    ipcRenderer.on('remote:question', listener);
+    return () => ipcRenderer.removeListener('remote:question', listener);
   },
   chooseWorkspace: () => ipcRenderer.invoke('app:choose-workspace'),
   chooseCodexExecutable: () => ipcRenderer.invoke('app:choose-codex'),

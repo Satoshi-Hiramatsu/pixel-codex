@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import {
@@ -27,11 +28,14 @@ import { PhaserCanvas } from './game/PhaserCanvas';
 import { effortOptions, modelLabel, modelOptions, resolveModelId } from './models';
 import {
   formatCommunicationMessage,
+  formatRemoteApproval,
+  formatRemoteQuestion,
   loadCommunicationPolicy,
   mergeCommunicationPolicy,
   saveCommunicationPolicy,
 } from './remote/communicationPolicy';
 import type { CommunicationPolicyPatch } from './remote/communicationPolicy';
+import { lanPairingQr, reachableRelayUrl, urlPairingQr } from './remote/RemoteProtocol';
 import { SkillBook, useSkillBook } from './SkillBook';
 import { skillBriefing } from './skills/skillFile';
 import {
@@ -46,18 +50,57 @@ import type {
   Attachment,
   CodexProcessInfo,
   RateLimitWindow,
+  RemoteApprovalResponse,
   RemoteGatewayStatus,
   RemoteInstruction,
+  RemoteQuestionResponse,
   RepoStatus,
   RoadmapStep,
   SaveMeta,
   SaveSlot,
+  WirelessPairingSession,
   WorkspaceEntry,
 } from './types';
 
 const agentColors = [0xf0bd55, 0x65b7d8, 0xe1775b, 0x78b56c, 0xb58bd4, 0xe09cb2];
 const recentWorkspacesKey = 'pixel-codex-recent-workspaces';
 const recentWorkspaceLimit = 8;
+
+/** 接続情報をQRにして見せます。端末のカメラで読めば入力なしでつながります。 */
+function PairingQr({ value, caption }: { value: string; caption: string }): React.JSX.Element {
+  const [image, setImage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    QRCode.toDataURL(value, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      // 外部Relay用は170文字前後になりQRが細かくなるため、余裕をもった大きさで出します。
+      width: 264,
+      color: { dark: '#241a2e', light: '#f4ecdc' },
+    })
+      .then((url) => {
+        if (!active) return;
+        setImage(url);
+        setError('');
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setImage('');
+        setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => { active = false; };
+  }, [value]);
+
+  if (error) return <p className="pairing-qr-error">QRを作れませんでした：{error}</p>;
+  return (
+    <figure className="pairing-qr">
+      {image && <img src={image} alt="接続用QRコード" />}
+      <figcaption>{caption}</figcaption>
+    </figure>
+  );
+}
 
 const statusLabels: Record<AgentState['status'], string> = {
   idle: '待機中',
@@ -393,7 +436,13 @@ export function App(): React.JSX.Element {
   const [communicationPolicy, setCommunicationPolicy] = useState(loadCommunicationPolicy);
   const [communicationNotice, setCommunicationNotice] = useState('');
   const [usbTestBusy, setUsbTestBusy] = useState(false);
+  const [wirelessTestBusy, setWirelessTestBusy] = useState(false);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingSession, setPairingSession] = useState<WirelessPairingSession | null>(null);
+  const [pairingRemaining, setPairingRemaining] = useState(0);
+  const [urlQrOpen, setUrlQrOpen] = useState(false);
   const [remoteHostId, setRemoteHostId] = useState('');
+  const [remoteLanAddress, setRemoteLanAddress] = useState('');
   const [remoteStatus, setRemoteStatus] = useState<RemoteGatewayStatus>({
     phase: 'disabled',
     label: '通信停止中',
@@ -980,6 +1029,58 @@ export function App(): React.JSX.Element {
     }
   }
 
+  async function startWirelessRemoteTest(): Promise<void> {
+    setWirelessTestBusy(true);
+    setCommunicationNotice('同一Wi-Fi用Relayを準備し、Pixel 9へ初回設定を渡しています…');
+    try {
+      const session = await window.pixelCodex.startWirelessRemoteTest();
+      updateCommunicationPolicy({
+        enabled: true,
+        relayUrl: session.relayUrl,
+        autoReconnect: true,
+      });
+      setCommunicationNotice(
+        `Wi-Fi接続を開始：${session.lanAddress}。Androidが「PC接続中」になったらUSBケーブルを抜いてください`,
+      );
+    } catch (error) {
+      setCommunicationNotice(errorMessage(error));
+    } finally {
+      setWirelessTestBusy(false);
+    }
+  }
+
+  /** ケーブルを使わないペアリング。PCは待ち受けと6桁コードを出すだけです。 */
+  async function beginWirelessPairing(): Promise<void> {
+    setPairingBusy(true);
+    setCommunicationNotice('ペアリングの受付を準備しています…');
+    try {
+      const session = await window.pixelCodex.startWirelessPairing();
+      setPairingSession(session);
+      setRemoteLanAddress(session.lanAddress);
+      setPairingRemaining(Math.max(0, Math.round((session.expiresAt - Date.now()) / 1000)));
+      // 次回起動時にこのRelayへ自動でつなぎ直せるよう、通信設定にも残します。
+      updateCommunicationPolicy({ enabled: true, relayUrl: session.relayUrl, autoReconnect: true });
+      setCommunicationNotice('Androidアプリにアドレスとコードを入力してください');
+    } catch (error) {
+      setPairingSession(null);
+      setCommunicationNotice(errorMessage(error));
+    } finally {
+      setPairingBusy(false);
+    }
+  }
+
+  /**
+   * QRに載せてよいRelay URL。PC自身の設定はループバックを指すことがあるので、
+   * 端末から届くアドレスへ直したうえで使います。直せないときは空になります。
+   */
+  const scannableRelayUrl = reachableRelayUrl(communicationPolicy.relayUrl, remoteLanAddress);
+
+  function cancelWirelessPairing(): void {
+    void window.pixelCodex.cancelWirelessPairing();
+    setPairingSession(null);
+    setCommunicationNotice('ペアリングの受付を終了しました');
+  }
+
   /**
    * 統括責任者への指示書。自分で手を動かさず、ロードマップを引いて
    * 担当者へ割り振るように、毎回のお願いに添えて送ります。
@@ -1076,17 +1177,96 @@ export function App(): React.JSX.Element {
     }
   }
 
+  function acknowledgeRemote(
+    messageId: string,
+    outcome: 'started' | 'queued' | 'rejected' | 'failed',
+    detail: string,
+  ): void {
+    void window.pixelCodex.acknowledgeRemoteInstruction({
+      messageId,
+      outcome,
+      detail,
+      time: Date.now(),
+    });
+  }
+
   function acknowledgeRemoteInstruction(
     instruction: RemoteInstruction,
     outcome: 'started' | 'queued' | 'rejected' | 'failed',
     detail: string,
   ): void {
-    void window.pixelCodex.acknowledgeRemoteInstruction({
-      messageId: instruction.messageId,
-      outcome,
-      detail,
-      time: Date.now(),
-    });
+    acknowledgeRemote(instruction.messageId, outcome, detail);
+  }
+
+  /** スマートフォンから返ってきた承認の可否。PCで出ている要求と一致したときだけ通します。 */
+  async function receiveRemoteApproval(response: RemoteApprovalResponse): Promise<void> {
+    if (!communicationPolicy.enabled || !communicationPolicy.allowRemoteApprovals) {
+      acknowledgeRemote(response.messageId, 'rejected', 'PC側でスマートフォンからの承認が無効です');
+      return;
+    }
+    if (!approval || String(approval.requestId) !== response.requestId) {
+      acknowledgeRemote(response.messageId, 'rejected', 'その承認待ちはPCで処理済みです');
+      return;
+    }
+    const accepted = response.decision === 'accept';
+    try {
+      await window.pixelCodex.respondApproval(approval.requestId, response.decision);
+      addLog(
+        accepted ? 'スマートフォンから操作を承認しました' : 'スマートフォンから操作を拒否しました',
+        accepted ? 'success' : 'warning',
+        approval.agentId,
+      );
+      setCommunicationNotice(accepted ? 'スマートフォンから承認されました' : 'スマートフォンから拒否されました');
+      clearApproval();
+      acknowledgeRemote(response.messageId, 'started', accepted ? '承認しました' : '拒否しました');
+    } catch (error) {
+      const detail = errorMessage(error);
+      setCommunicationNotice(detail);
+      acknowledgeRemote(response.messageId, 'failed', detail);
+    }
+  }
+
+  async function receiveRemoteQuestion(response: RemoteQuestionResponse): Promise<void> {
+    if (!communicationPolicy.enabled || !communicationPolicy.allowRemoteApprovals) {
+      acknowledgeRemote(response.messageId, 'rejected', 'PC側でスマートフォンからの回答が無効です');
+      return;
+    }
+    if (!questionRequest || String(questionRequest.requestId) !== response.requestId) {
+      acknowledgeRemote(response.messageId, 'rejected', 'その質問はPCで回答済みです');
+      return;
+    }
+    // 秘密の入力は端末へ送っていないので、回答も受け取りません。
+    if (questionRequest.questions.some((question) => question.isSecret)) {
+      acknowledgeRemote(response.messageId, 'rejected', '秘密の入力を含む質問はPCで回答してください');
+      return;
+    }
+    const answered = questionRequest.questions.map((question) => ({
+      question,
+      text: response.answers[question.id]?.trim() ?? '',
+    }));
+    if (answered.some((entry) => !entry.text)) {
+      acknowledgeRemote(response.messageId, 'rejected', 'すべての質問に回答してください');
+      return;
+    }
+    try {
+      await window.pixelCodex.respondUserInput(
+        questionRequest.requestId,
+        Object.fromEntries(answered.map((entry) => [entry.question.id, [entry.text]])),
+      );
+      addMessage({
+        agentId: questionRequest.agentId,
+        role: 'user',
+        text: answered.map((entry) => `${entry.question.header}: ${entry.text}`).join('\n'),
+      });
+      addLog('スマートフォンからAIの質問に回答しました', 'success', questionRequest.agentId);
+      setCommunicationNotice('スマートフォンからの回答をCodexへ送信しました');
+      clearQuestion();
+      acknowledgeRemote(response.messageId, 'started', '回答を送信しました');
+    } catch (error) {
+      const detail = errorMessage(error);
+      setCommunicationNotice(detail);
+      acknowledgeRemote(response.messageId, 'failed', detail);
+    }
   }
 
   async function executeRemoteInstruction(instruction: RemoteInstruction): Promise<void> {
@@ -1166,12 +1346,39 @@ export function App(): React.JSX.Element {
 
   useEffect(() => window.pixelCodex.onRemoteStatus(setRemoteStatus), []);
 
+  useEffect(() => window.pixelCodex.onRemotePairing((event) => {
+    if (event.phase === 'open') return;
+    setPairingSession(null);
+    if (event.phase === 'paired') {
+      setCommunicationNotice(`${event.deviceName ?? 'Android端末'}とペアリングしました。ケーブルなしで接続できます`);
+      return;
+    }
+    const reasons: Record<string, string> = {
+      expired: 'ペアリングの有効期限が切れました。もう一度開始してください',
+      cancelled: 'ペアリングの受付を終了しました',
+      failed: 'ペアリングを中止しました',
+    };
+    setCommunicationNotice(event.detail ?? reasons[event.phase] ?? 'ペアリングを終了しました');
+  }), []);
+
+  // 残り時間の表示。0になった時点でメイン側も自動的に受付を閉じます。
+  useEffect(() => {
+    if (!pairingSession) return undefined;
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, Math.round((pairingSession.expiresAt - Date.now()) / 1000));
+      setPairingRemaining(remaining);
+      if (remaining === 0) setPairingSession(null);
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [pairingSession]);
+
   useEffect(() => {
     window.pixelCodex
       .getRemoteHostInfo()
       .then((info) => {
         setRemoteHostId(info.hostId);
         setRemoteStatus(info.status);
+        setRemoteLanAddress(info.lanAddress);
       })
       .catch((error) => setCommunicationNotice(errorMessage(error)));
   }, []);
@@ -1209,6 +1416,16 @@ export function App(): React.JSX.Element {
     ],
   );
 
+  useEffect(
+    () => window.pixelCodex.onRemoteApproval((response) => void receiveRemoteApproval(response)),
+    [communicationPolicy.enabled, communicationPolicy.allowRemoteApprovals, approval],
+  );
+
+  useEffect(
+    () => window.pixelCodex.onRemoteQuestion((response) => void receiveRemoteQuestion(response)),
+    [communicationPolicy.enabled, communicationPolicy.allowRemoteApprovals, questionRequest],
+  );
+
   useEffect(() => {
     const latestMessage = formatCommunicationMessage(
       messages[messages.length - 1]?.text,
@@ -1225,6 +1442,8 @@ export function App(): React.JSX.Element {
       pendingInstructions: remoteQueue.length,
       approvalPending: Boolean(approval),
       questionPending: Boolean(questionRequest),
+      approval: formatRemoteApproval(approval, communicationPolicy),
+      question: formatRemoteQuestion(questionRequest, communicationPolicy),
       latestMessage,
       updatedAt: Date.now(),
     });
@@ -1239,8 +1458,7 @@ export function App(): React.JSX.Element {
     approval,
     questionRequest,
     messages,
-    communicationPolicy.contentLevel,
-    communicationPolicy.hideSensitiveDetails,
+    communicationPolicy,
   ]);
 
   useEffect(() => {
@@ -2193,15 +2411,75 @@ export function App(): React.JSX.Element {
                       接続設定を確認
                     </button>
                     <button
+                      className="communication-test-button qr"
+                      type="button"
+                      disabled={!scannableRelayUrl || !remoteHostId}
+                      onClick={() => setUrlQrOpen((open) => !open)}
+                    >
+                      {urlQrOpen ? 'URLのQRを隠す' : 'URLのQRを表示（外部Relay用）'}
+                    </button>
+                    <button
                       className="communication-test-button usb"
                       type="button"
-                      disabled={usbTestBusy}
+                      disabled={usbTestBusy || wirelessTestBusy}
                       onClick={() => void startUsbRemoteTest()}
                     >
                       {usbTestBusy ? 'USB接続を準備中…' : 'USB実機テストを開始'}
                     </button>
+                    <button
+                      className="communication-test-button wireless"
+                      type="button"
+                      disabled={usbTestBusy || wirelessTestBusy}
+                      onClick={() => void startWirelessRemoteTest()}
+                    >
+                      {wirelessTestBusy ? 'Wi-Fi接続を準備中…' : 'Wi-Fi実機テストを開始（USBで初期設定）'}
+                    </button>
+                    <button
+                      className="communication-test-button pairing"
+                      type="button"
+                      disabled={usbTestBusy || wirelessTestBusy || pairingBusy || Boolean(pairingSession)}
+                      onClick={() => void beginWirelessPairing()}
+                    >
+                      {pairingBusy ? 'ペアリング準備中…' : 'ケーブルなしでペアリング'}
+                    </button>
                   </div>
-                  <p>{remoteStatus.error ?? 'URLと方針だけをこのPCに保存します。認証情報は保存しません。'}</p>
+                  {urlQrOpen && scannableRelayUrl && remoteHostId && (
+                    <div className="pairing-panel url-qr">
+                      <p className="pairing-lead">
+                        AndroidアプリでQRを読み取ると、Relay URLとHost IDが一度に入ります。
+                        <b>このQRには認証情報が入っています。画面共有や撮影に注意してください。</b>
+                      </p>
+                      <PairingQr
+                        value={urlPairingQr(scannableRelayUrl, remoteHostId)}
+                        caption={`接続設定QR・${new URL(scannableRelayUrl).host}`}
+                      />
+                    </div>
+                  )}
+                  {pairingSession && (
+                    <div className="pairing-panel">
+                      <p className="pairing-lead">
+                        Androidアプリで「QRで読み取る」を押すか、「PCとペアリング」に次を入力してください。
+                      </p>
+                      <PairingQr
+                        value={lanPairingQr(pairingSession)}
+                        caption={`同一Wi-Fi用・${pairingSession.lanAddress}`}
+                      />
+                      <dl>
+                        <dt>PCのアドレス</dt>
+                        <dd className="pairing-address">{pairingSession.lanAddress}</dd>
+                        <dt>ペアリングコード</dt>
+                        <dd className="pairing-code">{pairingSession.code.replace(/(\d{3})(\d{3})/, '$1 $2')}</dd>
+                      </dl>
+                      <div className="pairing-footer">
+                        <span>
+                          残り {Math.floor(pairingRemaining / 60)}:{String(pairingRemaining % 60).padStart(2, '0')}
+                          ／ポート {pairingSession.port}
+                        </span>
+                        <button type="button" onClick={cancelWirelessPairing}>受付を終了</button>
+                      </div>
+                    </div>
+                  )}
+                  <p>{remoteStatus.error ?? '「ケーブルなしでペアリング」は同じWi-Fiにいる端末とUSBなしで接続します。一度成功すれば次回からは自動接続です。'}</p>
                 </section>
 
                 <section className="communication-card">
@@ -2214,6 +2492,18 @@ export function App(): React.JSX.Element {
                     />
                     新規指示・追加指示を受け付ける
                   </label>
+                  <label className="communication-check important">
+                    <input
+                      type="checkbox"
+                      checked={communicationPolicy.allowRemoteApprovals}
+                      onChange={(event) => updateCommunicationPolicy({ allowRemoteApprovals: event.target.checked })}
+                    />
+                    承認の可否と質問への回答をスマートフォンから行う
+                  </label>
+                  <p className="communication-caution">
+                    ONにすると、コマンド実行やファイル変更の許可を手元の端末から出せるようになります。
+                    承認内容は端末にも表示されます。端末を他人に渡さない前提で使ってください。
+                  </p>
                   <div className="communication-rule">
                     <b>新規指示</b><span>PCで選択中の作業フォルダに新しいスレッドを開始</span>
                     <b>追加指示</b><span>実行中なら待ち行列へ、待機中ならすぐ送信</span>

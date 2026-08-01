@@ -348,7 +348,30 @@ footer { height: 24px; display: flex; align-items: center; justify-content: spac
 .communication-test-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .communication-test-button.usb { color: #27342e; border-color: #7d582c; background: #f0bd55; }
 .communication-test-button.usb:hover:not(:disabled) { background: #ffd477; }
+.communication-test-button.wireless { color: #effffb; border-color: #254f74; background: #3978a8; }
+.communication-test-button.wireless:hover:not(:disabled) { background: #4b91c7; }
+.communication-test-button.pairing { color: #2b1f33; border-color: #6c4880; background: #c79ade; }
+.communication-test-button.pairing:hover:not(:disabled) { background: #dcb4ef; }
 .communication-test-button:disabled { opacity: .55; cursor: wait; }
+.pairing-panel { margin-top: 11px; padding: 11px; color: #f2f7ef; border: 3px solid #5a3f74; background: #3d2c50; box-shadow: 3px 3px 0 #8d6d3e; }
+.pairing-lead { margin: 0 0 9px; color: #d9c8ea; font-size: 10px; line-height: 1.5; }
+.pairing-panel dl { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 7px 10px; margin: 0; }
+.pairing-panel dt { color: #b79ccd; font: 700 9px Consolas, monospace; letter-spacing: 1.2px; }
+.pairing-panel dd { margin: 0; }
+.pairing-address { font: 900 16px Consolas, monospace; letter-spacing: 1px; }
+.pairing-code { color: #ffd477; font: 900 26px Consolas, monospace; letter-spacing: 5px; }
+.pairing-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding-top: 9px; border-top: 2px dashed #6c4880; font-size: 10px; }
+.pairing-footer button { height: 28px; padding: 0 11px; color: #2f3b35; border: 2px solid #74502e; background: #f0bd55; cursor: pointer; font-weight: 900; font-size: 10px; }
+.pairing-footer button:hover { background: #ffd379; }
+.communication-test-button.qr { color: #241a2e; border-color: #5f6f43; background: #a8c479; }
+.communication-test-button.qr:hover:not(:disabled) { background: #bedd8c; }
+.pairing-panel.url-qr { border-color: #5f6f43; background: #2f3b28; }
+.pairing-lead b { display: block; margin-top: 5px; color: #ffd477; }
+.pairing-qr { display: flex; flex-direction: column; align-items: center; gap: 7px; margin: 0 0 11px; }
+.pairing-qr img { width: 264px; height: 264px; image-rendering: pixelated; border: 4px solid #f4ecdc; }
+.pairing-qr figcaption { color: #d9c8ea; font: 700 9px Consolas, monospace; letter-spacing: 1.1px; }
+.pairing-qr-error { margin: 0 0 10px; color: #ffb59a; font-size: 10px; }
+.communication-caution { margin: 6px 0 0; padding: 7px 9px; color: #5e4626; border-left: 4px solid #c07a2e; background: #f0dda8; font-size: 9px; line-height: 1.55; }
 .communication-rule { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 7px 9px; margin-top: 10px; font-size: 10px; line-height: 1.45; }
 .communication-rule b { color: #2f7469; }
 .communication-rule span { color: #61533e; }

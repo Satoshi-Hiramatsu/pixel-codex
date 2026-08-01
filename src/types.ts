@@ -3,20 +3,32 @@ import type {
   RemoteGatewayConfig,
   RemoteGatewayStatus,
   RemoteHostInfo,
+  RemoteApprovalResponse,
   RemoteInstruction,
   RemoteInstructionResult,
+  RemoteQuestionResponse,
   RemoteStateSnapshot,
   UsbTestSession,
+  WirelessPairingEvent,
+  WirelessPairingSession,
+  WirelessTestSession,
 } from './remote/RemoteProtocol';
 
 export type {
   RemoteGatewayConfig,
   RemoteGatewayStatus,
   RemoteHostInfo,
+  RemoteApprovalRequest,
+  RemoteApprovalResponse,
   RemoteInstruction,
   RemoteInstructionResult,
+  RemoteQuestionRequest,
+  RemoteQuestionResponse,
   RemoteStateSnapshot,
   UsbTestSession,
+  WirelessPairingEvent,
+  WirelessPairingSession,
+  WirelessTestSession,
 } from './remote/RemoteProtocol';
 
 export type AgentStatus =
@@ -392,10 +404,16 @@ export interface PixelCodexApi {
   getRemoteHostInfo: () => Promise<RemoteHostInfo>;
   configureRemoteGateway: (config: RemoteGatewayConfig) => Promise<RemoteGatewayStatus>;
   startUsbRemoteTest: () => Promise<UsbTestSession>;
+  startWirelessRemoteTest: () => Promise<WirelessTestSession>;
+  startWirelessPairing: () => Promise<WirelessPairingSession>;
+  cancelWirelessPairing: () => Promise<void>;
+  onRemotePairing: (callback: (event: WirelessPairingEvent) => void) => () => void;
   updateRemoteState: (state: RemoteStateSnapshot) => Promise<void>;
   acknowledgeRemoteInstruction: (result: RemoteInstructionResult) => Promise<void>;
   onRemoteStatus: (callback: (status: RemoteGatewayStatus) => void) => () => void;
   onRemoteInstruction: (callback: (instruction: RemoteInstruction) => void) => () => void;
+  onRemoteApproval: (callback: (response: RemoteApprovalResponse) => void) => () => void;
+  onRemoteQuestion: (callback: (response: RemoteQuestionResponse) => void) => () => void;
   chooseWorkspace: () => Promise<string | null>;
   chooseCodexExecutable: () => Promise<string | null>;
   listWorkspaceDirectory: (workspace: string, relativePath?: string) => Promise<WorkspaceEntry[]>;
