@@ -295,6 +295,17 @@ export class DevelopmentRelay extends EventEmitter {
     return { previewId, path: `${previewPathPrefix}${previewId}`, expiresAt };
   }
 
+  /** 期限内の控えだけを返します。Driveへ預けるときの元ファイルを引くのに使います。 */
+  findPreview(previewId: string): { filePath: string; mimeType: string } | undefined {
+    const preview = this.previews.get(previewId);
+    if (!preview) return undefined;
+    if (preview.expiresAt <= Date.now()) {
+      this.discardPreview(previewId);
+      return undefined;
+    }
+    return { filePath: preview.filePath, mimeType: preview.mimeType };
+  }
+
   private discardPreview(previewId: string): void {
     const preview = this.previews.get(previewId);
     if (!preview) return;

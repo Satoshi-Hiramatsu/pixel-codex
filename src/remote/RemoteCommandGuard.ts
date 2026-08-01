@@ -3,6 +3,7 @@ import type {
   RemoteInstruction,
   RemotePreviewRequest,
   RemotePreviewSourcesRequest,
+  RemotePreviewUploadRequest,
   RemoteQuestionResponse,
 } from './RemoteProtocol';
 
@@ -11,7 +12,8 @@ export type RemoteCommand =
   | { kind: 'approval'; approval: RemoteApprovalResponse }
   | { kind: 'question'; question: RemoteQuestionResponse }
   | { kind: 'previewSources'; request: RemotePreviewSourcesRequest }
-  | { kind: 'preview'; request: RemotePreviewRequest };
+  | { kind: 'preview'; request: RemotePreviewRequest }
+  | { kind: 'previewUpload'; request: RemotePreviewUploadRequest };
 
 export interface GuardResult {
   command?: RemoteCommand;
@@ -37,6 +39,7 @@ const acceptedTypes = new Set([
   'question.respond',
   'preview.sources.request',
   'preview.request',
+  'preview.upload',
 ]);
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -105,6 +108,12 @@ export class RemoteCommandGuard {
       return { command: { kind: 'preview', request: { ...head, sourceId, viewport } } };
     }
 
+    if (type === 'preview.upload') {
+      const previewId = trimmedString(payload?.previewId, 128);
+      if (!previewId) return { error: '預ける画像が指定されていません' };
+      return { command: { kind: 'previewUpload', request: { ...head, previewId } } };
+    }
+
     const requestId = trimmedString(payload?.requestId, 128);
     if (!requestId) return { error: '対象の要求が指定されていません' };
 
@@ -133,12 +142,13 @@ export class RemoteCommandGuard {
   /** 間隔を空けさせたい操作だけがキーを持ちます。指示や承認は対象外です。 */
   private throttleKey(type: string, deviceId?: string): string | undefined {
     if (type === 'preview.request') return `preview:${deviceId ?? ''}`;
+    if (type === 'preview.upload') return `upload:${deviceId ?? ''}`;
     if (type === 'preview.sources.request') return `sources:${deviceId ?? ''}`;
     return undefined;
   }
 
   private throttleInterval(type: string): number {
-    return type === 'preview.request' ? previewIntervalMs : previewSourcesIntervalMs;
+    return type === 'preview.sources.request' ? previewSourcesIntervalMs : previewIntervalMs;
   }
 
   private throttled(type: string, deviceId: string | undefined, now: number): string | undefined {

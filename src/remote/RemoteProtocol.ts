@@ -219,6 +219,29 @@ export interface RemotePreviewFailed {
   reason: string;
 }
 
+/** LAN外から見返せるよう、撮ったものをDriveへ預けたいときの要求。 */
+export interface RemotePreviewUploadRequest {
+  messageId: string;
+  deviceId?: string;
+  previewId: string;
+  createdAt: number;
+}
+
+export interface RemotePreviewUploaded {
+  messageId: string;
+  previewId: string;
+  driveUrl: string;
+}
+
+/** 通信室に出すGoogle Drive連携の状態。資格情報そのものは画面へ渡しません。 */
+export interface DriveStatus {
+  configured: boolean;
+  connected: boolean;
+  account: string;
+  folderName: string;
+  error?: string;
+}
+
 export type RemoteInstructionOutcome = 'started' | 'queued' | 'rejected' | 'failed';
 
 export interface RemoteInstructionResult {

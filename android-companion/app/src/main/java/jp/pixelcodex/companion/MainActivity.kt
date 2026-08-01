@@ -1,7 +1,9 @@
 package jp.pixelcodex.companion
 
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +45,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -91,6 +94,7 @@ private fun CompanionApp(
     autoConnect: Boolean,
 ) {
     val state by client.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val pairingClient = remember { PairingClient() }
     val relayFinder = remember { RelayFinder() }
     var searchBusy by remember { mutableStateOf(false) }
@@ -257,6 +261,12 @@ private fun CompanionApp(
                     onRefreshSources = { client.requestPreviewSources() },
                     onCapture = { sourceId -> client.requestPreview(sourceId, previewViewport) },
                     onLoadImage = { url, onDone -> client.fetchPreview(url, onDone) },
+                    onUploadToDrive = { previewId -> client.requestPreviewUpload(previewId) },
+                    onOpenLink = { url ->
+                        runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        }
+                    },
                 )
 
                 CompanionTab.SETTINGS -> SettingsTab(
@@ -670,6 +680,8 @@ private fun PreviewTab(
     onRefreshSources: () -> Unit,
     onCapture: (String) -> Unit,
     onLoadImage: (String, (ByteArray?) -> Unit) -> Unit,
+    onUploadToDrive: (String) -> Unit,
+    onOpenLink: (String) -> Unit,
 ) {
     var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     var loadError by remember { mutableStateOf("") }
@@ -749,6 +761,19 @@ private fun PreviewTab(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.secondary,
                 )
+                // 外出先で見返したいときだけDriveへ預けます。自動では上げません。
+                if (preview.driveUrl.isBlank()) {
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = online && !preview.uploading,
+                        onClick = { onUploadToDrive(image.previewId) },
+                    ) { Text(if (preview.uploading) "Driveへ預けています…" else "Driveへ預ける") }
+                } else {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onOpenLink(preview.driveUrl) },
+                    ) { Text("Driveで開く") }
+                }
             }
         }
     }

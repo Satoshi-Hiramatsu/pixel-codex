@@ -71,6 +71,9 @@ data class PreviewState(
     val busy: Boolean = false,
     val message: String = "",
     val image: PreviewImage? = null,
+    /** Driveへ預けた場合の控え。LAN外から見返すためのURLです。 */
+    val driveUrl: String = "",
+    val uploading: Boolean = false,
 )
 
 data class RemoteUiState(
@@ -225,6 +228,18 @@ class RemoteClient(private val deviceId: String) {
         return sent
     }
 
+    /** 撮ったものをDriveへ預けます。押したときだけ動き、自動では上げません。 */
+    fun requestPreviewUpload(previewId: String): Boolean {
+        val socket = webSocket ?: return false
+        if (mutableState.value.phase != ConnectionPhase.ONLINE || previewId.isEmpty()) return false
+        val payload = JSONObject()
+            .put("deviceId", deviceId)
+            .put("previewId", previewId)
+        val sent = socket.send(envelope("preview.upload", payload))
+        if (sent) updatePreview { it.copy(uploading = true, message = "Driveへ預けています") }
+        return sent
+    }
+
     /** 画像はWebSocketに載らないので、同じRelayのHTTP側から取ります。 */
     fun fetchPreview(url: String, onDone: (ByteArray?) -> Unit) {
         val request = Request.Builder().url(url).build()
@@ -290,7 +305,11 @@ class RemoteClient(private val deviceId: String) {
                 // プレビューの要求が受付前に弾かれると応答が返らないので、待ち表示を解きます。
                 if (outcome == "rejected" || outcome == "failed") {
                     updatePreview {
-                        if (it.busy) it.copy(busy = false, message = detail) else it
+                        if (it.busy || it.uploading) {
+                            it.copy(busy = false, uploading = false, message = detail)
+                        } else {
+                            it
+                        }
                     }
                 }
             }
@@ -327,6 +346,8 @@ class RemoteClient(private val deviceId: String) {
                     it.copy(
                         busy = false,
                         message = "",
+                        driveUrl = "",
+                        uploading = false,
                         image = PreviewImage(
                             previewId = payload.optString("previewId"),
                             url = url,
@@ -337,10 +358,24 @@ class RemoteClient(private val deviceId: String) {
                     )
                 }
             }
+            "preview.uploaded" -> {
+                val driveUrl = message.optJSONObject("payload")?.optString("driveUrl").orEmpty()
+                updatePreview {
+                    it.copy(
+                        uploading = false,
+                        driveUrl = driveUrl,
+                        message = if (driveUrl.isEmpty()) "Driveの場所を受け取れませんでした" else "",
+                    )
+                }
+            }
             "preview.failed" -> {
                 val reason = message.optJSONObject("payload")?.optString("reason").orEmpty()
                 updatePreview {
-                    it.copy(busy = false, message = reason.ifEmpty { "撮影できませんでした" })
+                    it.copy(
+                        busy = false,
+                        uploading = false,
+                        message = reason.ifEmpty { "撮影できませんでした" },
+                    )
                 }
             }
             "relay.error" -> {

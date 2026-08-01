@@ -51,6 +51,7 @@ import type {
   AgentState,
   Attachment,
   CodexProcessInfo,
+  DriveStatus,
   RateLimitWindow,
   RemoteApprovalResponse,
   RemoteGatewayStatus,
@@ -438,6 +439,15 @@ export function App(): React.JSX.Element {
   const [communicationPolicy, setCommunicationPolicy] = useState(loadCommunicationPolicy);
   const [communicationNotice, setCommunicationNotice] = useState('');
   const [previewUrlDraft, setPreviewUrlDraft] = useState('');
+  const [driveStatus, setDriveStatus] = useState<DriveStatus>({
+    configured: false,
+    connected: false,
+    account: '',
+    folderName: 'Pixel Codex Previews',
+  });
+  const [driveClientId, setDriveClientId] = useState('');
+  const [driveClientSecret, setDriveClientSecret] = useState('');
+  const [driveBusy, setDriveBusy] = useState(false);
   const [usbTestBusy, setUsbTestBusy] = useState(false);
   const [wirelessTestBusy, setWirelessTestBusy] = useState(false);
   const [pairingBusy, setPairingBusy] = useState(false);
@@ -1018,6 +1028,34 @@ export function App(): React.JSX.Element {
     });
   }
 
+  async function runDriveAction(
+    action: () => Promise<DriveStatus>,
+    success: string,
+  ): Promise<void> {
+    setDriveBusy(true);
+    try {
+      setDriveStatus(await action());
+      setCommunicationNotice(success);
+    } catch (error) {
+      setCommunicationNotice(error instanceof Error ? error.message : 'Driveの操作に失敗しました');
+    } finally {
+      setDriveBusy(false);
+    }
+  }
+
+  function saveDriveCredentials(): void {
+    void runDriveAction(
+      async () => {
+        const status = await window.pixelCodex.configureDrive(driveClientId, driveClientSecret);
+        // 画面に残しておく必要はないので、預けたら消します。
+        setDriveClientId('');
+        setDriveClientSecret('');
+        return status;
+      },
+      '認証情報をこのPCに保存しました。続けて「Googleと接続」を押してください',
+    );
+  }
+
   function validateCommunicationRelay(): void {
     if (!communicationPolicy.relayUrl) {
       setCommunicationNotice('Relay URLを入力してください');
@@ -1408,6 +1446,7 @@ export function App(): React.JSX.Element {
         setRemoteLanAddress(info.lanAddress);
       })
       .catch((error) => setCommunicationNotice(errorMessage(error)));
+    window.pixelCodex.getDriveStatus().then(setDriveStatus).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -2619,7 +2658,82 @@ export function App(): React.JSX.Element {
                 </section>
 
                 <section className="communication-card">
-                  <header><span>04</span><h3>通知するタイミング</h3></header>
+                  <header><span>04</span><h3>Google Drive（外出先で見る場合）</h3></header>
+                  <p className="communication-caution">
+                    画面プレビューは同じWi-Fiにいる間だけ届きます。外出先でも見返したい画像は、
+                    端末の「Driveへ」ボタンで預けられます。成果物がGoogleへ送られるため、
+                    必要なときだけお使いください。自動では上げません。
+                  </p>
+                  <div className="communication-rule">
+                    <b>状態</b>
+                    <span>
+                      {driveStatus.connected
+                        ? `接続済み（${driveStatus.account}）`
+                        : driveStatus.configured
+                          ? '認証情報は保存済み。Googleとの接続が未完了です'
+                          : '未設定'}
+                    </span>
+                    <b>保存先</b><span>マイドライブの「{driveStatus.folderName}」フォルダ</span>
+                  </div>
+                  {!driveStatus.connected && (
+                    <>
+                      <label className="communication-field">
+                        <span>クライアントID</span>
+                        <input
+                          type="text"
+                          value={driveClientId}
+                          placeholder="000000000000-xxxxxxxx.apps.googleusercontent.com"
+                          onChange={(event) => setDriveClientId(event.target.value)}
+                        />
+                      </label>
+                      <label className="communication-field">
+                        <span>クライアントシークレット</span>
+                        <input
+                          type="password"
+                          value={driveClientSecret}
+                          onChange={(event) => setDriveClientSecret(event.target.value)}
+                        />
+                      </label>
+                      <div className="communication-test-actions">
+                        <button
+                          type="button"
+                          className="communication-button-secondary"
+                          disabled={driveBusy}
+                          onClick={saveDriveCredentials}
+                        >認証情報を保存</button>
+                        <button
+                          type="button"
+                          className="communication-test-button"
+                          disabled={driveBusy || !driveStatus.configured}
+                          onClick={() => void runDriveAction(
+                            () => window.pixelCodex.connectDrive(),
+                            'Google Driveと接続しました',
+                          )}
+                        >Googleと接続</button>
+                      </div>
+                    </>
+                  )}
+                  {driveStatus.connected && (
+                    <button
+                      type="button"
+                      className="communication-button-secondary"
+                      disabled={driveBusy}
+                      onClick={() => void runDriveAction(
+                        () => window.pixelCodex.disconnectDrive(),
+                        'Google Driveとの接続を解除しました',
+                      )}
+                    >接続を解除</button>
+                  )}
+                  <aside>
+                    Google Cloudでプロジェクトを作り、OAuthクライアント（種類は「デスクトップアプリ」）を
+                    発行してください。求める権限は drive.file だけで、このアプリが作ったファイル以外の
+                    Driveの中身は読めません。リンクは共有設定にしないため、端末側で同じGoogleアカウントに
+                    サインインしている必要があります。
+                  </aside>
+                </section>
+
+                <section className="communication-card">
+                  <header><span>05</span><h3>通知するタイミング</h3></header>
                   {([
                     ['turnCompleted', '作業が完了したとき'],
                     ['approvalRequested', '承認が必要になったとき'],
@@ -2640,7 +2754,7 @@ export function App(): React.JSX.Element {
                 </section>
 
                 <section className="communication-card">
-                  <header><span>05</span><h3>送信する内容</h3></header>
+                  <header><span>06</span><h3>送信する内容</h3></header>
                   <label className="communication-field">
                     <span>通知の詳しさ</span>
                     <select

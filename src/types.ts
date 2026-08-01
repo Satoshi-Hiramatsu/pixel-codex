@@ -1,6 +1,7 @@
 import type { TokenUsage } from './costs';
 import type { PreviewSource } from './remote/previewSources';
 import type {
+  DriveStatus,
   RemoteGatewayConfig,
   RemoteGatewayStatus,
   RemoteHostInfo,
@@ -16,6 +17,7 @@ import type {
 } from './remote/RemoteProtocol';
 
 export type {
+  DriveStatus,
   RemoteGatewayConfig,
   RemoteGatewayStatus,
   RemoteHostInfo,
@@ -27,6 +29,8 @@ export type {
   RemotePreviewReady,
   RemotePreviewRequest,
   RemotePreviewSourceSummary,
+  RemotePreviewUploaded,
+  RemotePreviewUploadRequest,
   RemotePreviewViewport,
   RemoteQuestionRequest,
   RemoteQuestionResponse,
@@ -420,6 +424,11 @@ export interface PixelCodexApi {
   acknowledgeRemoteInstruction: (result: RemoteInstructionResult) => Promise<void>;
   /** 端末が選べる撮影対象を預けます。`state.snapshot`とは別経路で、変えたときだけ送ります。 */
   setRemotePreviewSources: (enabled: boolean, sources: PreviewSource[]) => Promise<void>;
+  getDriveStatus: () => Promise<DriveStatus>;
+  /** 利用者が用意したOAuthクライアント。シークレットはメインプロセスだけが持ちます。 */
+  configureDrive: (clientId: string, clientSecret: string) => Promise<DriveStatus>;
+  connectDrive: () => Promise<DriveStatus>;
+  disconnectDrive: () => Promise<DriveStatus>;
   onRemoteStatus: (callback: (status: RemoteGatewayStatus) => void) => () => void;
   onRemoteInstruction: (callback: (instruction: RemoteInstruction) => void) => () => void;
   onRemoteApproval: (callback: (response: RemoteApprovalResponse) => void) => () => void;

@@ -211,7 +211,8 @@ src/remote/
 ├── CommunicationPolicy.ts 通知タイミングと内容設定
 ├── MessageFormatter.ts    決定的テンプレートとマスキング
 ├── PreviewCapture.ts      画面の撮影とJPEG化（V0.3.0）
-└── previewSources.ts      撮影対象の正規化と検証（V0.3.0）
+├── previewSources.ts      撮影対象の正規化と検証（V0.3.0）
+└── DriveUploader.ts       Google DriveのOAuthとアップロード（V0.3.0）
 ```
 
 既存の`codex.on('event')`をRemote Gatewayにも購読させる。既存Rendererの状態管理は初期段階では変更せず、モバイルに必要な最小状態だけを`RemoteStateStore`で保持する。
@@ -331,6 +332,7 @@ app/
 - `question.respond`（V0.2.1追加。12件・1000文字まで）
 - `preview.sources.request`（V0.3.0追加。撮影対象の一覧要求。2秒に1回まで）
 - `preview.request`（V0.3.0追加。`sourceId`と`viewport`のみ。5秒に1回まで）
+- `preview.upload`（V0.3.0追加。Driveへの受け渡し要求。5秒に1回まで）
 
 `instruction.submit`を受信したデスクトップGatewayが、現在の状態に応じて`startThread`、`sendTask`、`RemoteQueue`のいずれかへ振り分ける。AndroidはCodexの内部メソッドを指定しない。
 
@@ -351,6 +353,21 @@ app/
 - `preview.sources`（V0.3.0追加）
 - `preview.ready`（V0.3.0追加。画像そのものではなく、Relayからの相対パスだけを返す）
 - `preview.failed`（V0.3.0追加）
+- `preview.uploaded`（V0.3.0追加。DriveのURL）
+
+### Google Drive連携（V0.3.0）
+
+外部Relayが無い間、LAN外から見返せる唯一の手段として用意する。撮影のたびに自動では上げず、
+端末で押されたときだけ実行する。
+
+- 認可はデスクトップ向けOAuth。ループバック（`127.0.0.1`）とPKCEで受け、外向きの口は開かない
+- 求める権限は`drive.file`のみ。**このアプリが作ったファイル**にしか届かない
+- 開発者の資格情報を配布物へ埋め込まない。利用者が自分のGoogle Cloudプロジェクトで
+  OAuthクライアントを作り、通信室で登録する。流出しても他の利用者へ波及しない
+- クライアントシークレットと更新用トークンはElectronの`safeStorage`で暗号化して保存し、
+  レンダラーへは一切返さない
+- 保存先はマイドライブの`Pixel Codex Previews`フォルダ。削除は利用者が行う
+- 共有設定は変更しない。端末側で同じGoogleアカウントにサインインしている前提とする
 
 ### 画面プレビュー（V0.3.0）
 
@@ -560,17 +577,16 @@ Androidからの任意シェル、任意ファイル読み取り、任意JSON-RP
 
 ## 14. MVP後の候補
 
-優先度順に検討する。承認と質問回答はV0.2.1、画面プレビューはV0.3.0で実装済みのため一覧から外した。
+優先度順に検討する。承認と質問回答はV0.2.1、画面プレビューとDrive連携はV0.3.0で実装済みのため一覧から外した。
 
 1. Steer、停止
 2. Androidで複数の許可済みワークスペースから対象を選択
-3. プレビュー画像のGoogle Driveへのアップロード（外部Relayが無い間、LAN外から見る手段）
-4. Androidからの画像・ログファイルの添付
-5. 変更ファイル一覧と軽量diffレビュー
-6. GitHub PR／CI状態の表示
-7. 音声入力
-8. 複数PC・複数ユーザー
-9. エンドツーエンド暗号化の強化と鍵ローテーション
+3. Androidからの画像・ログファイルの添付
+4. 変更ファイル一覧と軽量diffレビュー
+5. GitHub PR／CI状態の表示
+6. 音声入力
+7. 複数PC・複数ユーザー
+8. エンドツーエンド暗号化の強化と鍵ローテーション
 
 ## 15. 着手時に確定する事項
 

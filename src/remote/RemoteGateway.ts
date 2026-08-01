@@ -13,6 +13,8 @@ import {
   type RemotePreviewRequest,
   type RemotePreviewSourceSummary,
   type RemotePreviewSourcesRequest,
+  type RemotePreviewUploaded,
+  type RemotePreviewUploadRequest,
   type RemoteQuestionResponse,
   type RemoteStateSnapshot,
 } from './RemoteProtocol';
@@ -171,6 +173,10 @@ export class RemoteGateway extends EventEmitter {
       this.emit('preview', command.request satisfies RemotePreviewRequest);
       return;
     }
+    if (command.kind === 'previewUpload') {
+      this.emit('previewUpload', command.request satisfies RemotePreviewUploadRequest);
+      return;
+    }
     this.emit('question', command.question satisfies RemoteQuestionResponse);
   }
 
@@ -184,6 +190,10 @@ export class RemoteGateway extends EventEmitter {
 
   sendPreviewFailed(failed: RemotePreviewFailed): void {
     this.send('preview.failed', failed, failed.messageId);
+  }
+
+  sendPreviewUploaded(uploaded: RemotePreviewUploaded): void {
+    this.send('preview.uploaded', uploaded, uploaded.messageId);
   }
 
   private send(type: string, payload: unknown, messageId?: string): void {

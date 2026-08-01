@@ -26,6 +26,11 @@ const api: PixelCodexApi = {
   acknowledgeRemoteInstruction: (result) => ipcRenderer.invoke('remote:acknowledge', result),
   setRemotePreviewSources: (enabled, sources) =>
     ipcRenderer.invoke('remote:set-preview-sources', { enabled, sources }),
+  getDriveStatus: () => ipcRenderer.invoke('drive:status'),
+  configureDrive: (clientId, clientSecret) =>
+    ipcRenderer.invoke('drive:configure', clientId, clientSecret),
+  connectDrive: () => ipcRenderer.invoke('drive:connect'),
+  disconnectDrive: () => ipcRenderer.invoke('drive:disconnect'),
   onRemoteStatus: (callback) => {
     const listener = (_event: IpcRendererEvent, value: RemoteGatewayStatus) => callback(value);
     ipcRenderer.on('remote:status', listener);

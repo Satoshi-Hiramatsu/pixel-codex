@@ -30,6 +30,7 @@ import {
   summarizePreviewSources,
   type PreviewSource,
 } from './remote/previewSources';
+import { DriveUploader } from './remote/DriveUploader';
 import {
   deleteSkill,
   listSkillShelves,
@@ -43,6 +44,7 @@ import type {
   RemoteGatewayConfig,
   RemoteInstructionResult,
   RemotePreviewRequest,
+  RemotePreviewUploadRequest,
   RemoteStateSnapshot,
   SaveMeta,
   SkillScope,
@@ -69,6 +71,7 @@ app.enableSandbox();
 const codex = new CodexClient();
 let remoteGateway: RemoteGateway | undefined;
 const developmentRelay = new DevelopmentRelay();
+const driveUploader = new DriveUploader();
 
 /**
  * PCの身元とRelayトークン。どちらも保存しておくことで、一度ペアリングした
@@ -426,6 +429,38 @@ async function deliverPreview(request: RemotePreviewRequest): Promise<void> {
   }
 }
 
+/**
+ * 端末から頼まれた画像をDriveへ預けます。LAN外から見返すための控えなので、
+ * 撮影のたびに自動では上げず、端末で押されたときだけ実行します。
+ */
+async function uploadPreviewToDrive(request: RemotePreviewUploadRequest): Promise<void> {
+  const gateway = remoteGateway;
+  if (!gateway) return;
+  const fail = (reason: string): void => {
+    gateway.sendPreviewFailed({ messageId: request.messageId, reason });
+  };
+  if (!previewAllowed) {
+    fail('PCの通信室でプレビューの送信が許可されていません');
+    return;
+  }
+  const preview = developmentRelay.findPreview(request.previewId);
+  if (!preview) {
+    fail('その画像はもう残っていません。撮り直してください');
+    return;
+  }
+  try {
+    const name = `pixel-codex-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+    const driveUrl = await driveUploader.upload(preview.filePath, preview.mimeType, name);
+    gateway.sendPreviewUploaded({
+      messageId: request.messageId,
+      previewId: request.previewId,
+      driveUrl,
+    });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'Driveへ預けられませんでした');
+  }
+}
+
 /** 画面から届いた置き場所の指定。知らない値はグローバル扱いにします。 */
 function normalizeScope(value: unknown): SkillScope {
   return value === 'project' ? 'project' : 'global';
@@ -482,6 +517,12 @@ function registerIpc(): void {
       registeredPreviewSources = previewAllowed ? normalizePreviewSources(payload?.sources) : [];
     },
   );
+  ipcMain.handle('drive:status', () => driveUploader.getStatus());
+  ipcMain.handle('drive:configure', (_event, clientId: string, clientSecret: string) =>
+    driveUploader.configure(String(clientId ?? ''), String(clientSecret ?? '')),
+  );
+  ipcMain.handle('drive:connect', () => driveUploader.connect());
+  ipcMain.handle('drive:disconnect', () => driveUploader.disconnect());
   ipcMain.handle('app:choose-workspace', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0];
@@ -697,6 +738,11 @@ app.whenReady().then(async () => {
   remoteGateway.on('question', (response) => broadcast('remote:question', response));
   remoteGateway.on('previewSources', () => void respondWithPreviewSources());
   remoteGateway.on('preview', (request: RemotePreviewRequest) => void deliverPreview(request));
+  remoteGateway.on(
+    'previewUpload',
+    (request: RemotePreviewUploadRequest) => void uploadPreviewToDrive(request),
+  );
+  await driveUploader.load();
   developmentRelay.on('pairing', (event: WirelessPairingEvent) => {
     if (event.phase === 'paired') void markRemotePaired();
     broadcast('remote:pairing', event);
