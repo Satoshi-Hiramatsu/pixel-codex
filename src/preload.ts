@@ -26,6 +26,7 @@ const api: PixelCodexApi = {
   acknowledgeRemoteInstruction: (result) => ipcRenderer.invoke('remote:acknowledge', result),
   setRemotePreviewSources: (enabled, sources) =>
     ipcRenderer.invoke('remote:set-preview-sources', { enabled, sources }),
+  setRemoteDetail: (detail) => ipcRenderer.invoke('remote:set-detail', detail),
   getDriveStatus: () => ipcRenderer.invoke('drive:status'),
   configureDrive: (clientId, clientSecret) =>
     ipcRenderer.invoke('drive:configure', clientId, clientSecret),

@@ -1502,7 +1502,8 @@ export function App(): React.JSX.Element {
       connection,
       connectionLabel,
       rootThreadId,
-      rootStatus: rootAgent?.status,
+      // 端末には日本語のまま出したいので、内部の状態名ではなく表示用の言い方を送ります。
+      rootStatus: rootAgent ? statusLabels[rootAgent.status] : undefined,
       rootName: rootAgent?.name,
       busy: Boolean(rootAgent && !['idle', 'done', 'error'].includes(rootAgent.status)),
       pendingInstructions: remoteQueue.length,
@@ -1552,6 +1553,29 @@ export function App(): React.JSX.Element {
       }));
     return [...urls, ...files];
   }, [communicationPolicy.previewUrls, deliverables, workspace]);
+
+  /**
+   * 報告の全文と進行表。`state.snapshot`には載せず、変わったときだけメインへ預けます。
+   * 端末はこれを見たいときに取りに来るので、要約が途中で切れていても全文を読めます。
+   */
+  useEffect(() => {
+    const steps = roadmap.steps.slice(0, 40).map((step) => ({
+      title: step.title.slice(0, 120),
+      owner: step.owner?.slice(0, 40),
+      statusLabel: roadmapStatusLabels[step.status],
+      done: step.status === 'done',
+      active: step.status === 'active',
+    }));
+    void window.pixelCodex.setRemoteDetail({
+      report: messages[messages.length - 1]?.text ?? '',
+      roadmap: {
+        messageId: '',
+        title: roadmap.title,
+        steps,
+        doneCount: steps.filter((step) => step.done).length,
+      },
+    });
+  }, [messages, roadmap]);
 
   useEffect(() => {
     void window.pixelCodex.setRemotePreviewSources(

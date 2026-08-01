@@ -6,8 +6,11 @@ import {
   type RemoteApprovalResponse,
   type RemoteGatewayConfig,
   type RemoteGatewayStatus,
+  type RemoteDetailRequest,
   type RemoteInstruction,
   type RemoteInstructionResult,
+  type RemoteReportReady,
+  type RemoteRoadmapState,
   type RemotePreviewFailed,
   type RemotePreviewReady,
   type RemotePreviewRequest,
@@ -177,7 +180,23 @@ export class RemoteGateway extends EventEmitter {
       this.emit('previewUpload', command.request satisfies RemotePreviewUploadRequest);
       return;
     }
+    if (command.kind === 'report') {
+      this.emit('report', command.request satisfies RemoteDetailRequest);
+      return;
+    }
+    if (command.kind === 'roadmap') {
+      this.emit('roadmap', command.request satisfies RemoteDetailRequest);
+      return;
+    }
     this.emit('question', command.question satisfies RemoteQuestionResponse);
+  }
+
+  sendReportReady(ready: RemoteReportReady): void {
+    this.send('report.ready', ready, ready.messageId);
+  }
+
+  sendRoadmap(roadmap: RemoteRoadmapState): void {
+    this.send('roadmap.state', roadmap, roadmap.messageId);
   }
 
   sendPreviewSources(sources: RemotePreviewSourceSummary[]): void {

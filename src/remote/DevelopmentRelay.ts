@@ -56,16 +56,16 @@ interface PairingWindow {
 /** 6桁コードの総当たりを防ぐ回数。使い切るとその場でペアリングを閉じます。 */
 const maxPairingAttempts = 5;
 const portScanRange = 10;
-const previewPathPrefix = '/preview/';
-/** 端末が取りに来ないまま溜まらないよう、この枚数を超えたら古いものから捨てます。 */
-const maxPublishedPreviews = 12;
+const blobPathPrefix = '/blob/';
+/** 端末が取りに来ないまま溜まらないよう、この件数を超えたら古いものから捨てます。 */
+const maxPublishedBlobs = 12;
 
 /**
- * 撮影した画像の置き場。WebSocketは16KB上限かつテキストのみなので、画像は
- * このHTTP側で渡します。ここに載せたidだけが配信対象で、リクエストに入っていた
+ * 端末へ渡すものの置き場。WebSocketは16KB上限かつテキストのみなので、画像も
+ * 長い報告文もこのHTTP側で渡します。ここに載せたidだけが配信対象で、リクエストに入っていた
  * 文字列からファイルの場所を組み立てることはありません。
  */
-interface PublishedPreview {
+interface PublishedBlob {
   filePath: string;
   mimeType: string;
   expiresAt: number;
@@ -87,7 +87,7 @@ export class DevelopmentRelay extends EventEmitter {
   private pairing?: PairingWindow;
   private readonly hosts = new Map<string, RelaySocket>();
   private readonly devices = new Map<string, Set<RelaySocket>>();
-  private readonly previews = new Map<string, PublishedPreview>();
+  private readonly blobs = new Map<string, PublishedBlob>();
 
   async start(options: DevelopmentRelayOptions = {}): Promise<DevelopmentRelayInfo> {
     const bindHost = options.bindHost ?? '127.0.0.1';
@@ -112,8 +112,8 @@ export class DevelopmentRelay extends EventEmitter {
         this.handlePairRequest(request, response);
         return;
       }
-      if (request.method === 'GET' && request.url?.startsWith(previewPathPrefix)) {
-        this.handlePreviewRequest(request, response, token);
+      if (request.method === 'GET' && request.url?.startsWith(blobPathPrefix)) {
+        this.handleBlobRequest(request, response, token);
         return;
       }
       response.writeHead(404).end();
@@ -270,57 +270,57 @@ export class DevelopmentRelay extends EventEmitter {
   }
 
   /**
-   * 撮った画像を取りに来られる状態にします。宛先は推測できないidで、期限を過ぎたら
+   * 端末が取りに来られる状態にします。宛先は推測できないidで、期限を過ぎたら
    * 実ファイルごと消します。
    *
    * 返すのはパスだけです。PCがどのアドレスで見えているかは端末側しか知らないうえ、
    * 端末は接続に使っているRelayトークンをすでに持っているので、絶対URLの組み立ては
    * 端末に任せたほうが確実で、トークンをメッセージへ二重に載せずに済みます。
    */
-  publishPreview(filePath: string, mimeType: string, ttlMs: number): {
-    previewId: string;
+  publishBlob(filePath: string, mimeType: string, ttlMs: number): {
+    blobId: string;
     path: string;
     expiresAt: number;
   } {
     if (!this.info) throw new Error('Relayが起動していません');
-    this.sweepPreviews();
-    while (this.previews.size >= maxPublishedPreviews) {
-      const oldest = this.previews.keys().next().value as string | undefined;
+    this.sweepBlobs();
+    while (this.blobs.size >= maxPublishedBlobs) {
+      const oldest = this.blobs.keys().next().value as string | undefined;
       if (!oldest) break;
-      this.discardPreview(oldest);
+      this.discardBlob(oldest);
     }
-    const previewId = randomUUID();
+    const blobId = randomUUID();
     const expiresAt = Date.now() + ttlMs;
-    this.previews.set(previewId, { filePath, mimeType, expiresAt });
-    return { previewId, path: `${previewPathPrefix}${previewId}`, expiresAt };
+    this.blobs.set(blobId, { filePath, mimeType, expiresAt });
+    return { blobId, path: `${blobPathPrefix}${blobId}`, expiresAt };
   }
 
-  /** 期限内の控えだけを返します。Driveへ預けるときの元ファイルを引くのに使います。 */
-  findPreview(previewId: string): { filePath: string; mimeType: string } | undefined {
-    const preview = this.previews.get(previewId);
+  /** 期限内の控えだけを返します。Driveへ預けるときの元ファイルを引くのにも使います。 */
+  findBlob(blobId: string): { filePath: string; mimeType: string } | undefined {
+    const preview = this.blobs.get(blobId);
     if (!preview) return undefined;
     if (preview.expiresAt <= Date.now()) {
-      this.discardPreview(previewId);
+      this.discardBlob(blobId);
       return undefined;
     }
     return { filePath: preview.filePath, mimeType: preview.mimeType };
   }
 
-  private discardPreview(previewId: string): void {
-    const preview = this.previews.get(previewId);
+  private discardBlob(blobId: string): void {
+    const preview = this.blobs.get(blobId);
     if (!preview) return;
-    this.previews.delete(previewId);
+    this.blobs.delete(blobId);
     void fs.rm(preview.filePath, { force: true }).catch(() => undefined);
   }
 
-  private sweepPreviews(): void {
+  private sweepBlobs(): void {
     const now = Date.now();
-    for (const [previewId, preview] of this.previews) {
-      if (preview.expiresAt <= now) this.discardPreview(previewId);
+    for (const [blobId, preview] of this.blobs) {
+      if (preview.expiresAt <= now) this.discardBlob(blobId);
     }
   }
 
-  private handlePreviewRequest(
+  private handleBlobRequest(
     request: http.IncomingMessage,
     response: http.ServerResponse,
     token: string,
@@ -330,10 +330,10 @@ export class DevelopmentRelay extends EventEmitter {
       response.writeHead(401).end();
       return;
     }
-    const previewId = decodeURIComponent(url.pathname.slice(previewPathPrefix.length));
-    const preview = this.previews.get(previewId);
+    const blobId = decodeURIComponent(url.pathname.slice(blobPathPrefix.length));
+    const preview = this.blobs.get(blobId);
     if (!preview || preview.expiresAt <= Date.now()) {
-      if (preview) this.discardPreview(previewId);
+      if (preview) this.discardBlob(blobId);
       response.writeHead(404).end();
       return;
     }
@@ -347,7 +347,7 @@ export class DevelopmentRelay extends EventEmitter {
       });
       response.end(data);
     }).catch(() => {
-      this.discardPreview(previewId);
+      this.discardBlob(blobId);
       if (!response.writableEnded) response.writeHead(404).end();
     });
   }
@@ -355,7 +355,7 @@ export class DevelopmentRelay extends EventEmitter {
   stop(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
-    for (const previewId of [...this.previews.keys()]) this.discardPreview(previewId);
+    for (const blobId of [...this.blobs.keys()]) this.discardBlob(blobId);
     this.closePairing('cancelled');
     for (const socket of this.websocketServer?.clients ?? []) socket.terminate();
     this.websocketServer?.close();
@@ -457,7 +457,7 @@ export class DevelopmentRelay extends EventEmitter {
   }
 
   private ping(): void {
-    this.sweepPreviews();
+    this.sweepBlobs();
     for (const websocket of this.websocketServer?.clients ?? []) {
       const socket = websocket as RelaySocket;
       if (!socket.alive) {

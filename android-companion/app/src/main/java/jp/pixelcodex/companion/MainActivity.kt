@@ -8,8 +8,17 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,7 +27,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -40,7 +51,9 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -55,7 +68,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import java.util.UUID
 
-private enum class CompanionTab { CONSOLE, PREVIEW, SETTINGS }
+private enum class CompanionTab { CONSOLE, ROADMAP, PREVIEW, SETTINGS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -108,6 +121,8 @@ private fun CompanionApp(
     var manualOpen by remember { mutableStateOf(false) }
     var instruction by remember { mutableStateOf("") }
     var previewViewport by remember { mutableStateOf("mobile") }
+    var statusExpanded by remember { mutableStateOf(false) }
+    var reportOpen by remember { mutableStateOf(false) }
     var tab by remember {
         mutableStateOf(if (initialRelayUrl.isBlank()) CompanionTab.SETTINGS else CompanionTab.CONSOLE)
     }
@@ -207,6 +222,16 @@ private fun CompanionApp(
         }
     }
 
+    // 進行表も開いたときだけ取りに行きます。滅多に変わらないので常時は送らせません。
+    LaunchedEffect(tab, state.phase, state.roadmap.loaded) {
+        if (tab == CompanionTab.ROADMAP
+            && state.phase == ConnectionPhase.ONLINE
+            && !state.roadmap.loaded
+        ) {
+            client.requestRoadmap()
+        }
+    }
+
     // 撮影対象は見た目タブを開いたときだけ取りに行きます。開くまでは何も要求しません。
     LaunchedEffect(tab, state.phase, state.preview.sourcesLoaded) {
         if (tab == CompanionTab.PREVIEW
@@ -233,11 +258,36 @@ private fun CompanionApp(
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("PIXEL CODEX", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-            Text("Android Companion", color = MaterialTheme.colorScheme.secondary)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("PIXEL CODEX", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+                ActivityLamp(working = state.working, online = online)
+            }
+            Text(
+                if (state.working) "作業中" else "待機中",
+                color = MaterialTheme.colorScheme.secondary,
+            )
 
             TabSwitch(tab = tab, onSelect = { tab = it })
-            StatusCard(state)
+            StatusCard(
+                state = state,
+                expanded = statusExpanded,
+                onToggle = { statusExpanded = !statusExpanded },
+                onOpenReport = {
+                    reportOpen = true
+                    client.requestReport()
+                },
+            )
+            if (reportOpen) {
+                ReportCard(
+                    report = state.report,
+                    online = online,
+                    onRefresh = { client.requestReport() },
+                )
+            }
 
             when (tab) {
                 CompanionTab.CONSOLE -> ConsoleTab(
@@ -251,6 +301,12 @@ private fun CompanionApp(
                     onAnswerQuestion = { requestId, answers ->
                         client.sendQuestionAnswers(requestId, answers)
                     },
+                )
+
+                CompanionTab.ROADMAP -> RoadmapTab(
+                    roadmap = state.roadmap,
+                    online = online,
+                    onRefresh = { client.requestRoadmap() },
                 )
 
                 CompanionTab.PREVIEW -> PreviewTab(
@@ -331,10 +387,13 @@ private fun TabSwitch(tab: CompanionTab, onSelect: (CompanionTab) -> Unit) {
         TabButton("Codex", tab == CompanionTab.CONSOLE, Modifier.weight(1f)) {
             onSelect(CompanionTab.CONSOLE)
         }
+        TabButton("進行表", tab == CompanionTab.ROADMAP, Modifier.weight(1f)) {
+            onSelect(CompanionTab.ROADMAP)
+        }
         TabButton("見た目", tab == CompanionTab.PREVIEW, Modifier.weight(1f)) {
             onSelect(CompanionTab.PREVIEW)
         }
-        TabButton("通信設定", tab == CompanionTab.SETTINGS, Modifier.weight(1f)) {
+        TabButton("設定", tab == CompanionTab.SETTINGS, Modifier.weight(1f)) {
             onSelect(CompanionTab.SETTINGS)
         }
     }
@@ -648,7 +707,12 @@ private fun SettingsTab(
 }
 
 @Composable
-private fun StatusCard(state: RemoteUiState) {
+private fun StatusCard(
+    state: RemoteUiState,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onOpenReport: () -> Unit,
+) {
     val statusColor = when (state.phase) {
         ConnectionPhase.ONLINE -> Color(0xFF70CA8A)
         ConnectionPhase.CONNECTING -> Color(0xFFF0BD55)
@@ -657,16 +721,143 @@ private fun StatusCard(state: RemoteUiState) {
     }
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF172F3E))) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(state.status, color = statusColor, fontWeight = FontWeight.Black)
-            Text("作業フォルダ：${state.workspace.ifEmpty { "未選択" }}")
-            Text("統括責任者：${state.rootName.ifEmpty { "スレッド未作成" }}")
-            if (state.rootStatus.isNotEmpty()) Text("状態：${state.rootStatus}")
-            Text("待機指示：${state.pendingInstructions}件")
+            // 見出しだけは常に出し、詳細は畳めるようにします。画面の大半を接続状況が
+            // 占めると、肝心の報告がスクロールしないと読めなくなるためです。
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(state.status, color = statusColor, fontWeight = FontWeight.Black)
+                Text(if (expanded) "折りたたむ ▲" else "詳しく ▼", color = MaterialTheme.colorScheme.secondary)
+            }
+            if (expanded) {
+                Text("作業フォルダ：${state.workspace.ifEmpty { "未選択" }}")
+                Text("統括責任者：${state.rootName.ifEmpty { "スレッド未作成" }}")
+                if (state.rootStatus.isNotEmpty()) Text("状態：${state.rootStatus}")
+                Text("待機指示：${state.pendingInstructions}件")
+            }
             if (state.latestMessage.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Text("最新メッセージ", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
                 Text(state.latestMessage, style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = state.phase == ConnectionPhase.ONLINE,
+                    onClick = onOpenReport,
+                ) { Text("報告の全文を読む") }
             }
+        }
+    }
+}
+
+/**
+ * 見出しの横のランプ。PCが手を動かしている間だけゆっくり明滅させ、止まっていれば
+ * 消灯します。文字を読まなくても動いているかどうかが分かるようにするためです。
+ */
+@Composable
+private fun ActivityLamp(working: Boolean, online: Boolean) {
+    val transition = rememberInfiniteTransition(label = "activity")
+    val pulse by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulse",
+    )
+    val color = when {
+        working -> Color(0xFFF0BD55).copy(alpha = pulse)
+        online -> Color(0xFF70CA8A).copy(alpha = 0.30f)
+        else -> Color(0xFF8A979B).copy(alpha = 0.22f)
+    }
+    Box(
+        Modifier
+            .size(14.dp)
+            .clip(CircleShape)
+            .background(color),
+    )
+}
+
+@Composable
+private fun RoadmapTab(
+    roadmap: RoadmapState,
+    online: Boolean,
+    onRefresh: () -> Unit,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF203F38))) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(roadmap.title.ifEmpty { "進行表" }, fontWeight = FontWeight.Black)
+            if (roadmap.steps.isNotEmpty()) {
+                Text(
+                    "${roadmap.doneCount} / ${roadmap.steps.size} 工程が完了",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = online && !roadmap.busy,
+                onClick = onRefresh,
+            ) { Text(if (roadmap.busy) "読み込み中…" else "最新の状態にする") }
+
+            if (!online) {
+                Text("PCがオフラインです", style = MaterialTheme.typography.bodySmall)
+            }
+            if (roadmap.message.isNotBlank()) {
+                Text(roadmap.message, style = MaterialTheme.typography.bodySmall)
+            }
+            roadmap.steps.forEachIndexed { index, step ->
+                val mark = when {
+                    step.done -> "✓"
+                    step.active -> "…"
+                    else -> "${index + 1}"
+                }
+                val tone = when {
+                    step.done -> Color(0xFF70CA8A)
+                    step.active -> Color(0xFFF0BD55)
+                    else -> MaterialTheme.colorScheme.secondary
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(mark, color = tone, fontWeight = FontWeight.Black)
+                    Column(Modifier.weight(1f)) {
+                        Text(step.title, style = MaterialTheme.typography.bodyMedium)
+                        val detail = listOf(step.owner, step.statusLabel)
+                            .filter { it.isNotBlank() }
+                            .joinToString("・")
+                        if (detail.isNotBlank()) {
+                            Text(
+                                detail,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportCard(report: ReportState, online: Boolean, onRefresh: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF16323F))) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("報告の全文", fontWeight = FontWeight.Black)
+            when {
+                report.busy -> Text("読み込み中…", color = MaterialTheme.colorScheme.secondary)
+                report.text.isNotBlank() -> Text(report.text, style = MaterialTheme.typography.bodySmall)
+                report.message.isNotBlank() -> Text(report.message, style = MaterialTheme.typography.bodySmall)
+                else -> Text("まだ受け取っていません", color = MaterialTheme.colorScheme.secondary)
+            }
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = online && !report.busy,
+                onClick = onRefresh,
+            ) { Text("読み込み直す") }
         }
     }
 }

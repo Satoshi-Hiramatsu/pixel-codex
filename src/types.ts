@@ -9,6 +9,7 @@ import type {
   RemoteInstruction,
   RemoteInstructionResult,
   RemoteQuestionResponse,
+  RemoteRoadmapState,
   RemoteStateSnapshot,
   UsbTestSession,
   WirelessPairingEvent,
@@ -28,10 +29,14 @@ export type {
   RemotePreviewFailed,
   RemotePreviewReady,
   RemotePreviewRequest,
+  RemoteDetailRequest,
   RemotePreviewSourceSummary,
   RemotePreviewUploaded,
   RemotePreviewUploadRequest,
   RemotePreviewViewport,
+  RemoteReportReady,
+  RemoteRoadmapState,
+  RemoteRoadmapStep,
   RemoteQuestionRequest,
   RemoteQuestionResponse,
   RemoteStateSnapshot,
@@ -424,6 +429,8 @@ export interface PixelCodexApi {
   acknowledgeRemoteInstruction: (result: RemoteInstructionResult) => Promise<void>;
   /** 端末が選べる撮影対象を預けます。`state.snapshot`とは別経路で、変えたときだけ送ります。 */
   setRemotePreviewSources: (enabled: boolean, sources: PreviewSource[]) => Promise<void>;
+  /** 報告の全文と進行表。端末が見たいときに取りに来るので、ここでは預けるだけです。 */
+  setRemoteDetail: (detail: { report: string; roadmap: RemoteRoadmapState }) => Promise<void>;
   getDriveStatus: () => Promise<DriveStatus>;
   /** 利用者が用意したOAuthクライアント。シークレットはメインプロセスだけが持ちます。 */
   configureDrive: (clientId: string, clientSecret: string) => Promise<DriveStatus>;

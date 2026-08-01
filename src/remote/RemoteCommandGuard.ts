@@ -3,6 +3,7 @@ import type {
   RemoteInstruction,
   RemotePreviewRequest,
   RemotePreviewSourcesRequest,
+  RemoteDetailRequest,
   RemotePreviewUploadRequest,
   RemoteQuestionResponse,
 } from './RemoteProtocol';
@@ -13,7 +14,9 @@ export type RemoteCommand =
   | { kind: 'question'; question: RemoteQuestionResponse }
   | { kind: 'previewSources'; request: RemotePreviewSourcesRequest }
   | { kind: 'preview'; request: RemotePreviewRequest }
-  | { kind: 'previewUpload'; request: RemotePreviewUploadRequest };
+  | { kind: 'previewUpload'; request: RemotePreviewUploadRequest }
+  | { kind: 'report'; request: RemoteDetailRequest }
+  | { kind: 'roadmap'; request: RemoteDetailRequest };
 
 export interface GuardResult {
   command?: RemoteCommand;
@@ -40,6 +43,8 @@ const acceptedTypes = new Set([
   'preview.sources.request',
   'preview.request',
   'preview.upload',
+  'report.request',
+  'roadmap.request',
 ]);
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -108,6 +113,14 @@ export class RemoteCommandGuard {
       return { command: { kind: 'preview', request: { ...head, sourceId, viewport } } };
     }
 
+    if (type === 'report.request') {
+      return { command: { kind: 'report', request: { ...head } } };
+    }
+
+    if (type === 'roadmap.request') {
+      return { command: { kind: 'roadmap', request: { ...head } } };
+    }
+
     if (type === 'preview.upload') {
       const previewId = trimmedString(payload?.previewId, 128);
       if (!previewId) return { error: '預ける画像が指定されていません' };
@@ -144,11 +157,15 @@ export class RemoteCommandGuard {
     if (type === 'preview.request') return `preview:${deviceId ?? ''}`;
     if (type === 'preview.upload') return `upload:${deviceId ?? ''}`;
     if (type === 'preview.sources.request') return `sources:${deviceId ?? ''}`;
+    if (type === 'report.request') return `report:${deviceId ?? ''}`;
+    if (type === 'roadmap.request') return `roadmap:${deviceId ?? ''}`;
     return undefined;
   }
 
   private throttleInterval(type: string): number {
-    return type === 'preview.sources.request' ? previewSourcesIntervalMs : previewIntervalMs;
+    return type.startsWith('preview.') && type !== 'preview.sources.request'
+      ? previewIntervalMs
+      : previewSourcesIntervalMs;
   }
 
   private throttled(type: string, deviceId: string | undefined, now: number): string | undefined {

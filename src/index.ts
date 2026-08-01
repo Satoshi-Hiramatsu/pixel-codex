@@ -43,8 +43,10 @@ import type {
   CodexProcessInfo,
   RemoteGatewayConfig,
   RemoteInstructionResult,
+  RemoteDetailRequest,
   RemotePreviewRequest,
   RemotePreviewUploadRequest,
+  RemoteRoadmapState,
   RemoteStateSnapshot,
   SaveMeta,
   SkillScope,
@@ -407,14 +409,14 @@ async function deliverPreview(request: RemotePreviewRequest): Promise<void> {
   }
   try {
     const captured = await capturePreviewSource(request);
-    const published = developmentRelay.publishPreview(
+    const published = developmentRelay.publishBlob(
       captured.filePath,
       captured.mimeType,
       previewTtlMs,
     );
     gateway.sendPreviewReady({
       messageId: request.messageId,
-      previewId: published.previewId,
+      previewId: published.blobId,
       path: published.path,
       width: captured.width,
       height: captured.height,
@@ -427,6 +429,57 @@ async function deliverPreview(request: RemotePreviewRequest): Promise<void> {
       reason: error instanceof Error ? error.message : '撮影できませんでした',
     });
   }
+}
+
+/**
+ * 報告の全文と進行表の控え。どちらも`state.snapshot`には載せません。あれは返答が
+ * 1文字進むたびに端末へ流れる経路なので、長い本文や滅多に変わらない一覧を混ぜると
+ * 通信量だけが増えるためです。端末が見たいときに取りに来る形にしています。
+ */
+let latestReport = '';
+let latestRoadmap: RemoteRoadmapState = { messageId: '', title: '', steps: [], doneCount: 0 };
+
+/** 端末が読み終えるまでの猶予。画像と揃えてあります。 */
+const detailTtlMs = 10 * 60_000;
+
+function reportTempRoot(): string {
+  return path.join(app.getPath('temp'), 'pixel-codex-reports');
+}
+
+/**
+ * 報告の全文はHTTP側から取らせます。長さの上限が読めないうえ、WebSocketは1通
+ * 16KBを超えると接続ごと切れてしまうためです。
+ */
+async function deliverReport(request: RemoteDetailRequest): Promise<void> {
+  const gateway = remoteGateway;
+  if (!gateway) return;
+  const text = latestReport.trim();
+  if (!text) {
+    gateway.sendPreviewFailed({ messageId: request.messageId, reason: 'まだ報告がありません' });
+    return;
+  }
+  try {
+    await fs.mkdir(reportTempRoot(), { recursive: true });
+    const filePath = path.join(reportTempRoot(), `${randomUUID()}.txt`);
+    const data = Buffer.from(text, 'utf8');
+    await fs.writeFile(filePath, data, { mode: 0o600 });
+    const published = developmentRelay.publishBlob(filePath, 'text/plain; charset=utf-8', detailTtlMs);
+    gateway.sendReportReady({
+      messageId: request.messageId,
+      path: published.path,
+      bytes: data.length,
+      expiresAt: published.expiresAt,
+    });
+  } catch (error) {
+    gateway.sendPreviewFailed({
+      messageId: request.messageId,
+      reason: error instanceof Error ? error.message : '報告を渡せませんでした',
+    });
+  }
+}
+
+function deliverRoadmap(request: RemoteDetailRequest): void {
+  remoteGateway?.sendRoadmap({ ...latestRoadmap, messageId: request.messageId });
 }
 
 /**
@@ -443,7 +496,7 @@ async function uploadPreviewToDrive(request: RemotePreviewUploadRequest): Promis
     fail('PCの通信室でプレビューの送信が許可されていません');
     return;
   }
-  const preview = developmentRelay.findPreview(request.previewId);
+  const preview = developmentRelay.findBlob(request.previewId);
   if (!preview) {
     fail('その画像はもう残っていません。撮り直してください');
     return;
@@ -515,6 +568,14 @@ function registerIpc(): void {
     (_event, payload: { enabled?: boolean; sources?: unknown }) => {
       previewAllowed = payload?.enabled === true;
       registeredPreviewSources = previewAllowed ? normalizePreviewSources(payload?.sources) : [];
+    },
+  );
+  /** 報告の全文と進行表。端末が見たいときに取りに来るので、ここでは控えるだけです。 */
+  ipcMain.handle(
+    'remote:set-detail',
+    (_event, detail: { report?: string; roadmap?: RemoteRoadmapState }) => {
+      latestReport = typeof detail?.report === 'string' ? detail.report : '';
+      latestRoadmap = detail?.roadmap ?? { messageId: '', title: '', steps: [], doneCount: 0 };
     },
   );
   ipcMain.handle('drive:status', () => driveUploader.getStatus());
@@ -742,6 +803,8 @@ app.whenReady().then(async () => {
     'previewUpload',
     (request: RemotePreviewUploadRequest) => void uploadPreviewToDrive(request),
   );
+  remoteGateway.on('report', (request: RemoteDetailRequest) => void deliverReport(request));
+  remoteGateway.on('roadmap', (request: RemoteDetailRequest) => deliverRoadmap(request));
   await driveUploader.load();
   developmentRelay.on('pairing', (event: WirelessPairingEvent) => {
     if (event.phase === 'paired') void markRemotePaired();
@@ -758,6 +821,7 @@ app.on('before-quit', () => {
   // 貼り付けた画像の置き場は、そのセッションのあいだだけ残しておけば十分です。
   void fs.rm(attachmentTempRoot(), { recursive: true, force: true }).catch(() => undefined);
   void discardPreviews();
+  void fs.rm(reportTempRoot(), { recursive: true, force: true }).catch(() => undefined);
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

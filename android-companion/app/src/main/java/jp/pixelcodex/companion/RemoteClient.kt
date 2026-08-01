@@ -76,6 +76,30 @@ data class PreviewState(
     val uploading: Boolean = false,
 )
 
+data class RoadmapStep(
+    val title: String,
+    val owner: String,
+    val statusLabel: String,
+    val done: Boolean,
+    val active: Boolean,
+)
+
+data class RoadmapState(
+    val title: String = "",
+    val steps: List<RoadmapStep> = emptyList(),
+    val doneCount: Int = 0,
+    val loaded: Boolean = false,
+    val busy: Boolean = false,
+    val message: String = "",
+)
+
+/** 報告の全文。要約は240文字で切れるので、読みたいときにここへ取りに行きます。 */
+data class ReportState(
+    val text: String = "",
+    val busy: Boolean = false,
+    val message: String = "",
+)
+
 data class RemoteUiState(
     val phase: ConnectionPhase = ConnectionPhase.OFFLINE,
     val status: String = "未接続",
@@ -90,6 +114,10 @@ data class RemoteUiState(
     val question: QuestionRequest? = null,
     val lastCommandResult: String = "",
     val preview: PreviewState = PreviewState(),
+    /** PCが手を動かしているか。見出しのランプを点滅させるのに使います。 */
+    val working: Boolean = false,
+    val roadmap: RoadmapState = RoadmapState(),
+    val report: ReportState = ReportState(),
 )
 
 class RemoteClient(private val deviceId: String) {
@@ -228,6 +256,31 @@ class RemoteClient(private val deviceId: String) {
         return sent
     }
 
+    /** 報告の全文を取りに行きます。要約は240文字で切れるため、続きはここで読みます。 */
+    fun requestReport(): Boolean {
+        val socket = webSocket ?: return false
+        if (mutableState.value.phase != ConnectionPhase.ONLINE) return false
+        val sent = socket.send(envelope("report.request", JSONObject().put("deviceId", deviceId)))
+        if (sent) {
+            mutableState.value = mutableState.value.copy(
+                report = mutableState.value.report.copy(busy = true, message = ""),
+            )
+        }
+        return sent
+    }
+
+    fun requestRoadmap(): Boolean {
+        val socket = webSocket ?: return false
+        if (mutableState.value.phase != ConnectionPhase.ONLINE) return false
+        val sent = socket.send(envelope("roadmap.request", JSONObject().put("deviceId", deviceId)))
+        if (sent) {
+            mutableState.value = mutableState.value.copy(
+                roadmap = mutableState.value.roadmap.copy(busy = true, message = ""),
+            )
+        }
+        return sent
+    }
+
     /** 撮ったものをDriveへ預けます。押したときだけ動き、自動では上げません。 */
     fun requestPreviewUpload(previewId: String): Boolean {
         val socket = webSocket ?: return false
@@ -263,7 +316,7 @@ class RemoteClient(private val deviceId: String) {
      * PCから届くのはRelayからの相対パスだけです。PCがどのアドレスで見えているかは
      * こちらしか知らず、接続に使っているトークンも手元にあるので、宛先はここで組み立てます。
      */
-    private fun previewUrl(path: String): String {
+    private fun relayUrlFor(path: String): String {
         if (!path.startsWith("/")) return ""
         val relay = runCatching { URI(relayUrl) }.getOrNull() ?: return ""
         val host = relay.host ?: return ""
@@ -304,13 +357,25 @@ class RemoteClient(private val deviceId: String) {
                 )
                 // プレビューの要求が受付前に弾かれると応答が返らないので、待ち表示を解きます。
                 if (outcome == "rejected" || outcome == "failed") {
-                    updatePreview {
-                        if (it.busy || it.uploading) {
-                            it.copy(busy = false, uploading = false, message = detail)
+                    // 受付前に弾かれると応答が返らないので、待ち表示を解きます。
+                    val current = mutableState.value
+                    mutableState.value = current.copy(
+                        preview = if (current.preview.busy || current.preview.uploading) {
+                            current.preview.copy(busy = false, uploading = false, message = detail)
                         } else {
-                            it
-                        }
-                    }
+                            current.preview
+                        },
+                        report = if (current.report.busy) {
+                            current.report.copy(busy = false, message = detail)
+                        } else {
+                            current.report
+                        },
+                        roadmap = if (current.roadmap.busy) {
+                            current.roadmap.copy(busy = false, message = detail)
+                        } else {
+                            current.roadmap
+                        },
+                    )
                 }
             }
             "preview.sources" -> {
@@ -337,7 +402,7 @@ class RemoteClient(private val deviceId: String) {
             }
             "preview.ready" -> {
                 val payload = message.optJSONObject("payload") ?: return
-                val url = previewUrl(payload.optString("path"))
+                val url = relayUrlFor(payload.optString("path"))
                 if (url.isEmpty()) {
                     updatePreview { it.copy(busy = false, message = "画像の取得先を組み立てられませんでした") }
                     return
@@ -358,6 +423,50 @@ class RemoteClient(private val deviceId: String) {
                     )
                 }
             }
+            "report.ready" -> {
+                val url = relayUrlFor(message.optJSONObject("payload")?.optString("path").orEmpty())
+                if (url.isEmpty()) {
+                    mutableState.value = mutableState.value.copy(
+                        report = ReportState(message = "全文の取得先を組み立てられませんでした"),
+                    )
+                    return
+                }
+                // 全文はWebSocketに載せられない長さになりうるので、HTTP側から取ります。
+                fetchPreview(url) { data ->
+                    val text = data?.toString(Charsets.UTF_8)
+                    mutableState.value = mutableState.value.copy(
+                        report = ReportState(
+                            text = text.orEmpty(),
+                            message = if (text == null) "全文を受け取れませんでした" else "",
+                        ),
+                    )
+                }
+            }
+            "roadmap.state" -> {
+                val payload = message.optJSONObject("payload") ?: return
+                val array = payload.optJSONArray("steps")
+                val steps = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                    val item = array?.optJSONObject(index) ?: return@mapNotNull null
+                    val title = item.optString("title")
+                    if (title.isEmpty()) return@mapNotNull null
+                    RoadmapStep(
+                        title = title,
+                        owner = item.optString("owner"),
+                        statusLabel = item.optString("statusLabel"),
+                        done = item.optBoolean("done"),
+                        active = item.optBoolean("active"),
+                    )
+                }
+                mutableState.value = mutableState.value.copy(
+                    roadmap = RoadmapState(
+                        title = payload.optString("title"),
+                        steps = steps,
+                        doneCount = payload.optInt("doneCount"),
+                        loaded = true,
+                        message = if (steps.isEmpty()) "進行表はまだ作られていません" else "",
+                    ),
+                )
+            }
             "preview.uploaded" -> {
                 val driveUrl = message.optJSONObject("payload")?.optString("driveUrl").orEmpty()
                 updatePreview {
@@ -370,13 +479,26 @@ class RemoteClient(private val deviceId: String) {
             }
             "preview.failed" -> {
                 val reason = message.optJSONObject("payload")?.optString("reason").orEmpty()
-                updatePreview {
-                    it.copy(
-                        busy = false,
-                        uploading = false,
-                        message = reason.ifEmpty { "撮影できませんでした" },
-                    )
-                }
+                val detail = reason.ifEmpty { "受け取れませんでした" }
+                val current = mutableState.value
+                // 全文と進行表の取り寄せも同じ経路で失敗を返すので、待ち表示をまとめて解きます。
+                mutableState.value = current.copy(
+                    preview = if (current.preview.busy || current.preview.uploading) {
+                        current.preview.copy(busy = false, uploading = false, message = detail)
+                    } else {
+                        current.preview
+                    },
+                    report = if (current.report.busy) {
+                        current.report.copy(busy = false, message = detail)
+                    } else {
+                        current.report
+                    },
+                    roadmap = if (current.roadmap.busy) {
+                        current.roadmap.copy(busy = false, message = detail)
+                    } else {
+                        current.roadmap
+                    },
+                )
             }
             "relay.error" -> {
                 mutableState.value = mutableState.value.copy(
@@ -396,13 +518,19 @@ class RemoteClient(private val deviceId: String) {
     }
 
     private fun applySnapshot(payload: JSONObject) {
-        mutableState.value = mutableState.value.copy(
+        val previous = mutableState.value
+        val latestMessage = payload.optString("latestMessage")
+        // 報告が進んだら、控えてある全文はもう古いので捨てます。
+        val report = if (latestMessage == previous.latestMessage) previous.report else ReportState()
+        mutableState.value = previous.copy(
             phase = ConnectionPhase.ONLINE,
             status = payload.optString("connectionLabel", "PCオンライン"),
             workspace = payload.optString("workspace"),
             rootName = payload.optString("rootName"),
             rootStatus = payload.optString("rootStatus"),
-            latestMessage = payload.optString("latestMessage"),
+            latestMessage = latestMessage,
+            report = report,
+            working = payload.optBoolean("busy"),
             pendingInstructions = payload.optInt("pendingInstructions"),
             approvalPending = payload.optBoolean("approvalPending"),
             questionPending = payload.optBoolean("questionPending"),

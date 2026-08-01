@@ -233,6 +233,43 @@ export interface RemotePreviewUploaded {
   driveUrl: string;
 }
 
+/**
+ * 報告の全文と進行表は、端末が開いたときに取りに来ます。`state.snapshot`は返答が
+ * 1文字進むたびに流れる経路なので、長いものや滅多に変わらないものは載せません。
+ */
+export interface RemoteDetailRequest {
+  messageId: string;
+  deviceId?: string;
+  createdAt: number;
+}
+
+/**
+ * 報告の全文。長さの上限が読めないため、本文はHTTP側から取らせます。
+ * WebSocketは1通16KBまでで、超えると接続ごと切れてしまうためです。
+ */
+export interface RemoteReportReady {
+  messageId: string;
+  path: string;
+  bytes: number;
+  expiresAt: number;
+}
+
+export interface RemoteRoadmapStep {
+  title: string;
+  owner?: string;
+  /** 端末でそのまま出せる日本語。PC側の表記と揃えます。 */
+  statusLabel: string;
+  done: boolean;
+  active: boolean;
+}
+
+export interface RemoteRoadmapState {
+  messageId: string;
+  title: string;
+  steps: RemoteRoadmapStep[];
+  doneCount: number;
+}
+
 /** 通信室に出すGoogle Drive連携の状態。資格情報そのものは画面へ渡しません。 */
 export interface DriveStatus {
   configured: boolean;
