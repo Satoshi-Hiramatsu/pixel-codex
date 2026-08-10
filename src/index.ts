@@ -8,6 +8,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
+import { loadBridgeIdentity } from './bridge/bridgeIdentity';
+import { CaptureBridgeServer, type BridgeInboxTask } from './bridge/CaptureBridgeServer';
 import { CodexClient } from './codex/CodexClient';
 import {
   describeAttachment,
@@ -40,6 +42,7 @@ import {
   setUserDataRoot,
 } from './skills/skillStore';
 import type {
+  BridgeTaskUpdate,
   CodexProcessInfo,
   RemoteGatewayConfig,
   RemoteInstructionResult,
@@ -64,6 +67,14 @@ function attachmentTempRoot(): string {
   return path.join(app.getPath('temp'), 'pixel-codex-attachments');
 }
 
+/**
+ * 赤ペン先生から預かった赤入れの置き場。元の画像はあちらの持ち物なので、
+ * ここへ写し終えてから `accepted` を返します。
+ */
+function bridgeInboxRoot(): string {
+  return path.join(app.getPath('temp'), 'pixel-codex-inbox');
+}
+
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
@@ -72,6 +83,7 @@ app.enableSandbox();
 
 const codex = new CodexClient();
 let remoteGateway: RemoteGateway | undefined;
+let captureBridge: CaptureBridgeServer | undefined;
 const developmentRelay = new DevelopmentRelay();
 const driveUploader = new DriveUploader();
 
@@ -514,9 +526,47 @@ async function uploadPreviewToDrive(request: RemotePreviewUploadRequest): Promis
   }
 }
 
+/**
+ * 届いたまま、まだ画面へ渡していない赤入れ。画面が立ち上がる前に届いたものを
+ * 取りこぼさないよう、合図だけを送って中身はここから引き取らせます。
+ */
+let undeliveredBridgeTasks: BridgeInboxTask[] = [];
+
+/**
+ * 赤ペン先生からの受け取り口を開きます。
+ *
+ * 待ち受けはIOCPの待ちが1本増えるだけで、見張りも再接続も持ちません。既定で開けて
+ * おくのは、赤ペン先生から初めて送ったときに設定漏れで失敗させないためです。
+ * 待ち合わせ場所は利用者のプロファイルにしか書いていないので、名前を知らない
+ * 相手は接続を試すこともできません。通信室から閉じることもできます。
+ */
+async function startCaptureBridge(): Promise<void> {
+  const identity = await loadBridgeIdentity(app.getPath('userData'));
+  const bridge = new CaptureBridgeServer(identity, app.getVersion(), bridgeInboxRoot());
+  captureBridge = bridge;
+  bridge.on('task', (task: BridgeInboxTask) => {
+    undeliveredBridgeTasks = [...undeliveredBridgeTasks, task];
+    broadcast('bridge:available', undefined);
+  });
+  bridge.on('status', (status) => broadcast('bridge:status', status));
+  bridge.on('cancel', (taskId: string) => {
+    undeliveredBridgeTasks = undeliveredBridgeTasks.filter((task) => task.taskId !== taskId);
+    broadcast('bridge:cancel', taskId);
+  });
+  // 指示の全文や画像の中身はここへ出しません。追える範囲だけを残します。
+  bridge.on('log', (message: string) =>
+    broadcast('codex:event', { method: 'pixel/diagnostic', params: { message } }),
+  );
+  await bridge.start();
+}
+
 /** 画面から届いた置き場所の指定。知らない値はグローバル扱いにします。 */
 function normalizeScope(value: unknown): SkillScope {
   return value === 'project' ? 'project' : 'global';
+}
+
+function bridgeStatus(): { phase: 'stopped'; label: string; connected: false } | ReturnType<CaptureBridgeServer['getStatus']> {
+  return captureBridge?.getStatus() ?? { phase: 'stopped', label: '受け取り停止中', connected: false };
 }
 
 function broadcast(channel: string, value: unknown): void {
@@ -578,6 +628,42 @@ function registerIpc(): void {
       latestRoadmap = detail?.roadmap ?? { messageId: '', title: '', steps: [], doneCount: 0 };
     },
   );
+  ipcMain.handle('bridge:status', () => bridgeStatus());
+  ipcMain.handle('bridge:set-enabled', async (_event, enabled: boolean) => {
+    if (!captureBridge) return bridgeStatus();
+    if (enabled === true) return captureBridge.start();
+    captureBridge.stop();
+    return captureBridge.getStatus();
+  });
+  ipcMain.handle('bridge:drain', () => {
+    const tasks = undeliveredBridgeTasks;
+    undeliveredBridgeTasks = [];
+    return tasks;
+  });
+  /**
+   * 預かった赤入れをどう扱ったか。ここを通ったものだけが赤ペン先生へ伝わり、
+   * 終わったものはこの場で一時画像ごと片付きます。
+   */
+  ipcMain.handle('bridge:update-task', (_event, update: BridgeTaskUpdate) => {
+    const bridge = captureBridge;
+    if (!bridge) return;
+    const taskId = String(update?.taskId ?? '');
+    if (!taskId) return;
+    const detail = String(update?.detail ?? '').slice(0, 200);
+    switch (update?.outcome) {
+      case 'started':
+        bridge.sendStatus(taskId, 'started', detail || 'Pixel Codexで開始しました');
+        return;
+      case 'completed':
+        bridge.sendCompleted(taskId, detail || undefined);
+        return;
+      case 'declined':
+        bridge.sendFailed(taskId, detail || 'Pixel Codexで取り下げられました');
+        return;
+      default:
+        bridge.sendFailed(taskId, detail || 'Pixel Codexで処理できませんでした');
+    }
+  });
   ipcMain.handle('drive:status', () => driveUploader.getStatus());
   ipcMain.handle('drive:configure', (_event, clientId: string, clientSecret: string) =>
     driveUploader.configure(String(clientId ?? ''), String(clientSecret ?? '')),
@@ -722,9 +808,12 @@ function registerIpc(): void {
     if (!path.isAbsolute(cwd)) throw new Error('作業フォルダは絶対パスで指定してください。');
     const model = typeof options?.model === 'string' ? options.model.trim().slice(0, 120) : '';
     const effort = typeof options?.effort === 'string' ? options.effort.trim().slice(0, 32) : '';
+    // 知らない値で権限を広げられないよう、読み取り専用の指定だけを通します。
+    const sandbox = options?.sandbox === 'read-only' ? 'read-only' as const : undefined;
     return codex.startThread(cwd, {
       model: model || undefined,
       effort: effort || undefined,
+      sandbox,
     });
   });
   ipcMain.handle(
@@ -812,11 +901,15 @@ app.whenReady().then(async () => {
   });
   registerIpc();
   await resumeWirelessRelay();
+  await startCaptureBridge();
   createWindow();
 });
 app.on('before-quit', () => {
   remoteGateway?.stop();
   developmentRelay.stop();
+  captureBridge?.stop();
+  // 預かった赤入れは、確認されないまま残しておく意味がないので閉じるときに捨てます。
+  void captureBridge?.releaseAll();
   codex.stop();
   // 貼り付けた画像の置き場は、そのセッションのあいだだけ残しておけば十分です。
   void fs.rm(attachmentTempRoot(), { recursive: true, force: true }).catch(() => undefined);

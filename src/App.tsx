@@ -41,6 +41,7 @@ import { lanPairingQr, reachableRelayUrl, urlPairingQr } from './remote/RemotePr
 import { SkillBook, useSkillBook } from './SkillBook';
 import { skillBriefing } from './skills/skillFile';
 import {
+  communicatorAgentId,
   threadDisplayColor,
   threadDisplayName,
   threadDisplayRole,
@@ -50,6 +51,8 @@ import type {
   AgentProfile,
   AgentState,
   Attachment,
+  BridgeInboxTask,
+  BridgeServerStatus,
   CodexProcessInfo,
   DriveStatus,
   RateLimitWindow,
@@ -66,6 +69,16 @@ import type {
 } from './types';
 
 const agentColors = [0xf0bd55, 0x65b7d8, 0xe1775b, 0x78b56c, 0xb58bd4, 0xe09cb2];
+
+/**
+ * 同じフォルダを指しているかどうか。Windowsは大文字小文字を区別せず、区切りも
+ * 両方通るので、見た目の違いだけで「別のフォルダだ」と言わないようにします。
+ */
+function samePath(left: string, right: string): boolean {
+  const normalize = (value: string): string =>
+    value.replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase();
+  return normalize(left) === normalize(right);
+}
 const recentWorkspacesKey = 'pixel-codex-recent-workspaces';
 const recentWorkspaceLimit = 8;
 
@@ -483,6 +496,16 @@ export function App(): React.JSX.Element {
     label: '通信停止中',
   });
   const [remoteQueue, setRemoteQueue] = useState<RemoteInstruction[]>([]);
+  /**
+   * 赤ペン先生から届き、まだ送っていない赤入れ。受け取っただけでは動かさないので、
+   * ここに置いたまま利用者が送信するのを待ちます。
+   */
+  const [bridgeTasks, setBridgeTasks] = useState<BridgeInboxTask[]>([]);
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeServerStatus>({
+    phase: 'stopped',
+    label: '受け取り停止中',
+    connected: false,
+  });
   const [roadmapOpen, setRoadmapOpen] = useState(false);
   // 右カラムは4枚のタブを1枚ずつ出します。縦積みをやめたぶんフロア図に高さを回せます。
   const [sideTab, setSideTab] = useState<SideTab>('roster');
@@ -525,6 +548,11 @@ export function App(): React.JSX.Element {
   const initialWorkspace = useRef(recentWorkspaces[0]);
   const remoteInstructionRunning = useRef(false);
   const remoteQueueObservedWork = useRef(false);
+  /** 送信済みの赤入れ。終わったことを赤ペン先生へ伝えるまで覚えておきます。 */
+  const bridgeStartedTaskId = useRef('');
+  const bridgeObservedWork = useRef(false);
+  /** 指示欄へ添えた赤入れ画像。同じものを二度添えないための目印です。 */
+  const bridgeAdoptedPath = useRef('');
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) ?? agents[0],
@@ -535,6 +563,22 @@ export function App(): React.JSX.Element {
     () => agents.find((agent) => agent.id === rootThreadId || agent.threadId === rootThreadId),
     [agents, rootThreadId],
   );
+  /** いま確認を待っている赤入れ。1件ずつ片付けてもらいます。 */
+  const pendingBridgeTask = bridgeTasks[0];
+  const bridgeWorkspaceDiffers = Boolean(
+    pendingBridgeTask && workspace && !samePath(pendingBridgeTask.workingDirectory, workspace),
+  );
+  /**
+   * 送れない理由。受け取り自体は断らず、理由を出して待ちます。断ってしまうと、
+   * 接続し直しただけの人がもう一度赤入れを描くことになるためです。
+   */
+  const bridgeBlockedReason = !pendingBridgeTask
+    ? ''
+    : connection !== 'connected'
+      ? 'Codexに接続すると送れるようになります。'
+      : !workspace
+        ? 'PCで作業フォルダを選ぶと送れるようになります。'
+        : '';
   const finalReports = useMemo(
     () => messages.filter((message) => message.role === 'assistant' && message.phase === 'final_answer'),
     [messages],
@@ -1221,21 +1265,27 @@ export function App(): React.JSX.Element {
     }
     setBusy(true);
     try {
+      const attachments = taskAttachments.attachments;
+      // いま指示欄に載っている赤入れ。これがあると、送信の結果を赤ペン先生へ返します。
+      const carried = bridgeTasks.find(
+        (entry) => attachments.some((attachment) => attachment.path === entry.imagePath),
+      );
       let threadId = rootThreadId;
       if (!threadId) {
         const result = await window.pixelCodex.startThread(workspace, {
           model: resolveModelId(modelSettings),
           effort: modelSettings.effort,
+          // 「提案のみ」で届いた赤入れは、書き換えられない部屋で始めます。
+          sandbox: carried?.mode === 'Discuss' ? 'read-only' : undefined,
         });
         threadId = result.threadId;
         setRootThread(threadId);
       }
       const request = task.trim();
-      const attachments = taskAttachments.attachments;
       startProject(request.split(/\r?\n/)[0].slice(0, 40));
       await window.pixelCodex.sendTask(
         threadId,
-        `${request}${attachmentNote(attachments)}${directorBriefing()}`,
+        `${request}${bridgeBriefing(carried)}${attachmentNote(attachments)}${directorBriefing()}`,
         attachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind })),
       );
       addMessage({
@@ -1255,6 +1305,18 @@ export function App(): React.JSX.Element {
       );
       setTask('');
       taskAttachments.clear();
+      if (carried) {
+        bridgeStartedTaskId.current = carried.taskId;
+        bridgeObservedWork.current = false;
+        bridgeAdoptedPath.current = '';
+        setBridgeTasks((current) => current.filter((entry) => entry.taskId !== carried.taskId));
+        void window.pixelCodex.updateBridgeTask({
+          taskId: carried.taskId,
+          outcome: 'started',
+          detail: 'Pixel Codexで作業を開始しました',
+        });
+        addLog('赤ペン先生から届いた赤入れをCodexへ渡しました', 'success', threadId);
+      }
     } catch (error) {
       const message = errorMessage(error);
       setNotice(message);
@@ -1262,6 +1324,28 @@ export function App(): React.JSX.Element {
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * 赤入れに添える短い前置き。「提案のみ」は新しいスレッドなら読み取り専用の部屋で
+   * 始まりますが、既にある会話を続けるときは部屋の権限を変えられないため、
+   * ここで言葉としても伝えます。
+   *
+   * 赤ペン先生が言ってきた対象フォルダはここへ書きません。実際に触れるのは
+   * Pixel Codexの作業フォルダのほうで、食い違っていた場合に「触れない場所」を
+   * 対象として伝えることになるためです。食い違いは到着帯で人が確かめます。
+   */
+  function bridgeBriefing(carried: BridgeInboxTask | undefined): string {
+    if (!carried) return '';
+    const lines = [
+      '',
+      '[赤ペン先生から届いた赤入れ]',
+      '添付の画像には、画面へ直接書き込まれた指摘が含まれています。まず画像を見てください。',
+    ];
+    if (carried.mode === 'Discuss') {
+      lines.push('この依頼は「提案のみ」です。ファイルは変更せず、調査と提案だけを行ってください。');
+    }
+    return lines.join('\n');
   }
 
   function acknowledgeRemote(
@@ -1430,6 +1514,101 @@ export function App(): React.JSX.Element {
     }
     void executeRemoteInstruction(instruction);
   }
+
+  /**
+   * 赤ペン先生から届いた赤入れの引き取り。合図を受けてから取りに行く形にしているのは、
+   * 画面が立ち上がる前に届いたぶんを取りこぼさないためです。
+   */
+  async function drainBridgeTasks(): Promise<void> {
+    try {
+      const arrived = await window.pixelCodex.drainBridgeTasks();
+      if (!arrived.length) return;
+      setBridgeTasks((current) => [...current, ...arrived]);
+      addLog(
+        `赤ペン先生から赤入れが${arrived.length}件届きました。内容を確かめて送ってください`,
+        'info',
+        communicatorAgentId,
+      );
+    } catch {
+      // 受け取り口が閉じている起動もあります。次の合図で取りに行けば足ります。
+    }
+  }
+
+  function forgetBridgeTask(taskId: string): void {
+    // 添付を外すのは状態の更新なので、更新の途中ではなくここで済ませます。
+    const target = bridgeTasks.find((entry) => entry.taskId === taskId);
+    if (target) {
+      taskAttachments.removeByPath(target.imagePath);
+      if (bridgeAdoptedPath.current === target.imagePath) bridgeAdoptedPath.current = '';
+    }
+    setBridgeTasks((current) => current.filter((entry) => entry.taskId !== taskId));
+  }
+
+  /** 届いた赤入れの対象フォルダへ移ります。黙って移らないのは、進行中の会話が壊れるためです。 */
+  function adoptBridgeWorkspace(target: string): void {
+    void switchWorkspace(target);
+  }
+
+  /** 利用者が取り下げたとき。赤ペン先生へ理由を返し、預かった画像も片付けます。 */
+  function declineBridgeTask(taskId: string): void {
+    void window.pixelCodex.updateBridgeTask({
+      taskId,
+      outcome: 'declined',
+      detail: 'Pixel Codexで取り下げられました',
+    });
+    forgetBridgeTask(taskId);
+    addLog('赤ペン先生から届いた赤入れを取り下げました', 'warning', communicatorAgentId);
+  }
+
+  useEffect(() => {
+    void drainBridgeTasks();
+    return window.pixelCodex.onBridgeTaskAvailable(() => void drainBridgeTasks());
+  }, []);
+
+  useEffect(() => {
+    void window.pixelCodex.getBridgeStatus().then(setBridgeStatus).catch(() => undefined);
+    return window.pixelCodex.onBridgeStatus(setBridgeStatus);
+  }, []);
+
+  // 取り下げでは預かった一覧を引き当てるので、一覧が変わるたびに登録し直します。
+  useEffect(() => window.pixelCodex.onBridgeCancel((taskId) => {
+    forgetBridgeTask(taskId);
+    addLog('赤ペン先生が赤入れを取り下げました', 'info', communicatorAgentId);
+  }), [bridgeTasks]);
+
+  /**
+   * 届いた赤入れを指示欄へ下ろします。書きかけの文章は上書きしません。捨てられると
+   * 困るからで、そのときは帯の「指示を差し替える」で置き換えられます。
+   */
+  useEffect(() => {
+    const pending = bridgeTasks[0];
+    if (!pending || bridgeAdoptedPath.current === pending.imagePath) return;
+    bridgeAdoptedPath.current = pending.imagePath;
+    setTask((current) => (current.trim() ? current : pending.instruction));
+    void taskAttachments.adoptPaths([pending.imagePath]);
+  }, [bridgeTasks]);
+
+  /**
+   * 送った赤入れが終わったかどうか。送った直後はまだ手が空いたままなので、
+   * 一度は働いている状態を見てから、空いたところで終わったと判断します。
+   */
+  useEffect(() => {
+    const taskId = bridgeStartedTaskId.current;
+    if (!taskId || !rootAgent) return;
+    const working = !['idle', 'done', 'error'].includes(rootAgent.status);
+    if (working) {
+      bridgeObservedWork.current = true;
+      return;
+    }
+    if (!bridgeObservedWork.current) return;
+    bridgeObservedWork.current = false;
+    bridgeStartedTaskId.current = '';
+    void window.pixelCodex.updateBridgeTask({
+      taskId,
+      outcome: rootAgent.status === 'error' ? 'failed' : 'completed',
+      detail: rootAgent.status === 'error' ? 'Codexが作業を完了できませんでした' : '作業が終わりました',
+    });
+  }, [rootAgent?.status]);
 
   useEffect(() => window.pixelCodex.onRemoteStatus(setRemoteStatus), []);
 
@@ -1990,16 +2169,24 @@ export function App(): React.JSX.Element {
             </section>
           )}
         </div>
+        {/*
+          幅が足りないとき、この帯はラベルを外してアイコンだけになります。どのボタンも
+          消さないので、狭い画面でも押せる場所が変わりません。`title` は畳んだときの
+          手がかりになるため、すべてのボタンに付けてあります。
+        */}
         <div className="game-menu-buttons">
           <button className="save-button" type="button" title="セーブ／ロード" onClick={() => void openSaves()}>
+            <i className="menu-icon" aria-hidden="true">▣</i>
             <span>セーブ</span>
-            <strong>▣</strong>
+            <strong className="menu-glyph">▣</strong>
           </button>
-          <button className="library-button" type="button" onClick={() => void showLibrary()}>
+          <button className="library-button" type="button" title="図書館（作業フォルダの中身を見る）" onClick={() => void showLibrary()}>
+            <i className="menu-icon" aria-hidden="true">本</i>
             <span>図書館</span>
-            <strong>本</strong>
+            <strong className="menu-glyph">本</strong>
           </button>
-          <button className="staff-button" type="button" onClick={() => setStaffOpen(true)}>
+          <button className="staff-button" type="button" title="社員名簿（担当者の雇用と解雇）" onClick={() => setStaffOpen(true)}>
+            <i className="menu-icon" aria-hidden="true">人</i>
             <span>社員名簿</span>
             <strong>{hiredProfiles.length}</strong>
           </button>
@@ -2009,14 +2196,17 @@ export function App(): React.JSX.Element {
             title="スキルブック（装備したルールが次の指示から効きます）"
             onClick={() => setSkillsOpen(true)}
           >
+            <i className="menu-icon" aria-hidden="true">技</i>
             <span>スキル</span>
             <strong>{skillBox.equipped.length || '技'}</strong>
           </button>
           <button
             className={`blackboard-button ${deliverables.length ? 'has-results' : ''}`}
             type="button"
+            title="成果物ボード（できあがったものの一覧）"
             onClick={() => setBlackboardOpen(true)}
           >
+            <i className="menu-icon" aria-hidden="true">品</i>
             <span>成果物</span>
             <strong>{deliverables.length}</strong>
           </button>
@@ -2026,6 +2216,7 @@ export function App(): React.JSX.Element {
             title="Android連携の通信・通知設定"
             onClick={() => setCommunicationOpen(true)}
           >
+            <i className="menu-icon" aria-hidden="true">信</i>
             <span>通信室</span>
             <strong>{remoteStatus.phase === 'connected' ? 'LIVE' : communicationPolicy.enabled ? 'ON' : 'OFF'}</strong>
           </button>
@@ -2039,6 +2230,7 @@ export function App(): React.JSX.Element {
               setReportOpen(true);
             }}
           >
+            <i className="menu-icon" aria-hidden="true">計</i>
             <span>会計報告</span>
             <strong>{accountingReports.length || '￥'}</strong>
           </button>
@@ -2211,6 +2403,57 @@ export function App(): React.JSX.Element {
           <div className="office-stage">
             <PhaserCanvas />
           </div>
+          {/*
+            赤ペン先生から届いた赤入れ。受け取っただけでは動かさないので、内容を
+            この帯で確かめてから、下の指示欄でいつもどおり送ってもらいます。
+          */}
+          {pendingBridgeTask && (
+            <section className="bridge-arrival" aria-label="赤ペン先生から届いた赤入れ">
+              <div className="bridge-arrival-head">
+                <span className="eyebrow">赤ペン先生</span>
+                <strong>赤入れが届きました</strong>
+                <span className={`bridge-arrival-mode ${pendingBridgeTask.mode === 'Edit' ? 'edit' : 'discuss'}`}>
+                  {pendingBridgeTask.mode === 'Edit' ? '修正する' : '提案のみ'}
+                </span>
+                {bridgeTasks.length > 1 && (
+                  <span className="bridge-arrival-queue">他に {bridgeTasks.length - 1} 件</span>
+                )}
+              </div>
+              <p className="bridge-arrival-path" title={pendingBridgeTask.workingDirectory}>
+                対象フォルダ {pendingBridgeTask.workingDirectory}
+              </p>
+              {bridgeWorkspaceDiffers && (
+                <p className="bridge-arrival-warn">
+                  いま開いている作業フォルダと違います。切り替えるまで、この赤入れは今の
+                  フォルダに対する依頼として送られます。
+                  <button
+                    type="button"
+                    onClick={() => adoptBridgeWorkspace(pendingBridgeTask.workingDirectory)}
+                  >
+                    切り替える
+                  </button>
+                </p>
+              )}
+              {bridgeBlockedReason && <p className="bridge-arrival-warn">{bridgeBlockedReason}</p>}
+              <div className="bridge-arrival-actions">
+                <small>内容を確かめて、下の指示欄から送ってください</small>
+                <button
+                  type="button"
+                  onClick={() => setTask(pendingBridgeTask.instruction)}
+                  disabled={task.trim() === pendingBridgeTask.instruction.trim()}
+                >
+                  指示を差し替える
+                </button>
+                <button
+                  type="button"
+                  className="bridge-arrival-decline"
+                  onClick={() => declineBridgeTask(pendingBridgeTask.taskId)}
+                >
+                  取り下げる
+                </button>
+              </div>
+            </section>
+          )}
           <form
             className={`task-composer ${taskAttachments.dragging ? 'dropping' : ''}`}
             onSubmit={submitTask}
@@ -2827,6 +3070,36 @@ export function App(): React.JSX.Element {
                     <strong>{remoteHostId || '初期化中'}</strong>
                     <small>待機中の遠隔指示 {remoteQueue.length}件・端末ペアリングは次の実装段階です</small>
                   </div>
+                </section>
+
+                <section className="communication-card">
+                  <header><span>07</span><h3>赤ペン先生からの受け取り</h3></header>
+                  <label className="communication-check">
+                    <input
+                      type="checkbox"
+                      checked={bridgeStatus.phase === 'listening'}
+                      onChange={(event) => {
+                        void window.pixelCodex
+                          .setBridgeEnabled(event.target.checked)
+                          .then(setBridgeStatus)
+                          .catch(() => undefined);
+                      }}
+                    />
+                    同じPCの赤ペン先生から赤入れを受け取る
+                  </label>
+                  <div className="communication-device">
+                    <span>受け取り口</span>
+                    <strong>{bridgeStatus.label}</strong>
+                    <small>
+                      {bridgeStatus.connected ? '赤ペン先生と接続中・' : ''}
+                      確認待ちの赤入れ {bridgeTasks.length}件
+                    </small>
+                  </div>
+                  <aside>
+                    受け取り口は同じPCの同じ利用者だけが使えます。待ち合わせ場所と合言葉は
+                    利用者のプロファイルにしか書かれておらず、他の利用者からは読めません。
+                    受け取っただけでCodexは動きません。画面で確かめて送ったときだけ動きます。
+                  </aside>
                 </section>
               </div>
 

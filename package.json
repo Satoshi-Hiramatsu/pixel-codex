@@ -1,7 +1,7 @@
 {
   "name": "pixel-codex",
   "productName": "Pixel Codex",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "A pixel office for visualizing and directing Codex agents",
   "main": ".webpack/main",
   "private": true,
@@ -12,6 +12,8 @@
     "publish": "electron-forge publish",
     "relay:dev": "node tools/remote-relay.mjs",
     "relay:verify": "node tools/verify-remote-relay.mjs",
+    "bridge:verify": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tools/ts-extension-hooks.mjs tools/verify-bridge-protocol.mjs",
+    "bridge:send": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tools/ts-extension-hooks.mjs tools/send-test-capture.mjs",
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit"
   },

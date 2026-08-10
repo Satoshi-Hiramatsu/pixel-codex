@@ -110,12 +110,12 @@ export class CodexClient extends EventEmitter {
    */
   async startThread(
     cwd: string,
-    options: { model?: string; effort?: string } = {},
+    options: { model?: string; effort?: string; sandbox?: 'read-only' | 'workspace-write' } = {},
   ): Promise<{ threadId: string }> {
     const base: Record<string, unknown> = {
       cwd,
       approvalPolicy: 'on-request',
-      sandbox: 'workspace-write',
+      sandbox: options.sandbox ?? 'workspace-write',
     };
     const attempts: Array<Record<string, unknown>> = [];
     if (options.model && options.effort) {

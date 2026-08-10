@@ -1,4 +1,5 @@
 import type { TokenUsage } from './costs';
+import type { BridgeInboxTask, BridgeServerStatus } from './bridge/CaptureBridgeServer';
 import type { PreviewSource } from './remote/previewSources';
 import type {
   DriveStatus,
@@ -47,6 +48,21 @@ export type {
 } from './remote/RemoteProtocol';
 
 export type { PreviewSource, PreviewSourceKind } from './remote/previewSources';
+
+export type { BridgeTaskMode } from './bridge/CaptureBridgeProtocol';
+export type { BridgeInboxTask, BridgeServerStatus } from './bridge/CaptureBridgeServer';
+
+/**
+ * 赤ペン先生から預かった赤入れの、いまの扱い。画面から主プロセスへ返し、
+ * 主プロセスが赤ペン先生へ短く伝えます。会話の中身は流しません。
+ */
+export type BridgeTaskOutcome = 'started' | 'declined' | 'completed' | 'failed';
+
+export interface BridgeTaskUpdate {
+  taskId: string;
+  outcome: BridgeTaskOutcome;
+  detail: string;
+}
 
 export type AgentStatus =
   | 'idle'
@@ -356,6 +372,12 @@ export interface CodexProcessInfo {
 export interface ThreadOptions {
   model?: string;
   effort?: string;
+  /**
+   * 作業フォルダを書き換えてよいか。既定は `workspace-write` です。赤ペン先生から
+   * 「提案のみ」で届いた赤入れのように、触らせたくない仕事だけ `read-only` にします。
+   * スレッドを作るときにしか効かないので、既存のスレッドを使い回す場合は指示文で伝えます。
+   */
+  sandbox?: 'read-only' | 'workspace-write';
 }
 
 /** ゲームのセーブデータに書いておく「そのときの状況」。 */
@@ -507,4 +529,19 @@ export interface PixelCodexApi {
     answers: Record<string, string[]>,
   ) => Promise<void>;
   onEvent: (callback: (event: CodexEvent) => void) => () => void;
+  /** 赤ペン先生からの受け取り口を開くか閉じるか。 */
+  setBridgeEnabled: (enabled: boolean) => Promise<BridgeServerStatus>;
+  getBridgeStatus: () => Promise<BridgeServerStatus>;
+  /**
+   * 赤入れが届いたという合図だけを受け取ります。中身は `drainBridgeTasks` で
+   * 取りに行きます。画面が立ち上がる前に届いた分を取りこぼさないためです。
+   */
+  onBridgeTaskAvailable: (callback: () => void) => () => void;
+  /** 預かったまま画面へ渡していない赤入れを、まとめて引き取ります。 */
+  drainBridgeTasks: () => Promise<BridgeInboxTask[]>;
+  onBridgeStatus: (callback: (status: BridgeServerStatus) => void) => () => void;
+  /** 赤ペン先生が取り下げたとき。 */
+  onBridgeCancel: (callback: (taskId: string) => void) => () => void;
+  /** 預かった赤入れをどう扱ったかを返します。ここで一時画像も片付きます。 */
+  updateBridgeTask: (update: BridgeTaskUpdate) => Promise<void>;
 }

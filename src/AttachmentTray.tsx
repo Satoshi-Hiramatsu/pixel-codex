@@ -44,7 +44,11 @@ export interface AttachmentBox {
   error: string;
   clear: () => void;
   remove: (id: string) => void;
+  /** 場所で外します。外から添えたものを、同じ場所を頼りに引き上げるためです。 */
+  removeByPath: (filePath: string) => void;
   chooseFiles: () => Promise<void>;
+  /** すでにディスクにあるものを場所で添えます。 */
+  adoptPaths: (paths: string[]) => Promise<void>;
   /** スクリーンショットの貼り付け。文字だけの貼り付けはそのまま通します。 */
   handlePaste: (event: React.ClipboardEvent) => void;
   dropHandlers: {
@@ -124,6 +128,24 @@ export function useAttachments(): AttachmentBox {
     }
   }, [append]);
 
+  /**
+   * すでにディスクにあるものを、場所を指定して添えます。赤ペン先生から届いた
+   * 赤入れのように、利用者の操作を経ずに現れる添付のための入り口です。
+   */
+  const adoptPaths = useCallback(
+    async (paths: string[]) => {
+      const targets = paths.filter(Boolean);
+      if (!targets.length) return;
+      setError('');
+      try {
+        append(await window.pixelCodex.describeAttachments(targets));
+      } catch (failure) {
+        setError(errorMessage(failure));
+      }
+    },
+    [append],
+  );
+
   const handlePaste = useCallback(
     (event: React.ClipboardEvent) => {
       const files = [...event.clipboardData.files];
@@ -170,7 +192,10 @@ export function useAttachments(): AttachmentBox {
       setError('');
     },
     remove: (id) => setAttachments((current) => current.filter((entry) => entry.id !== id)),
+    removeByPath: (filePath) =>
+      setAttachments((current) => current.filter((entry) => entry.path !== filePath)),
     chooseFiles,
+    adoptPaths,
     handlePaste,
     dropHandlers,
   };

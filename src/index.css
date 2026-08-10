@@ -57,7 +57,8 @@ button { color: inherit; }
 .topbar {
   min-height: 76px;
   display: grid;
-  grid-template-columns: 228px minmax(200px, 1fr) auto auto;
+  /* 各列は縮められるようにします。縮まない列が1つでもあると、帯ごと画面の外へ出ます。 */
+  grid-template-columns: auto minmax(120px, 1fr) auto auto;
   gap: 12px;
   align-items: center;
   padding: 0 24px;
@@ -66,6 +67,7 @@ button { color: inherit; }
   box-shadow: inset 0 -2px 0 #0c2437, 0 5px 0 #081925;
   z-index: 2;
 }
+.topbar > * { min-width: 0; }
 
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand h1 { margin: 0; font: 700 17px/1 Consolas, monospace; letter-spacing: 1.6px; }
@@ -116,6 +118,8 @@ button { color: inherit; }
 .workspace-history .choose-new-workspace:hover { background: #4393bd; }
 
 .game-menu-buttons { display: flex; align-items: center; gap: 9px; }
+/* 畳んだときだけ出る一文字。広い画面ではラベルがあるので隠しておきます。 */
+.menu-icon { display: none; }
 .staff-button, .communication-button, .blackboard-button, .library-button { height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 11px; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2), 3px 3px 0 #0a1b28; }
 .staff-button { color: #fff0bd; border: 3px solid #7a491f; outline: 1px solid #e0ad58; background: #a95b2d; }
 .staff-button:hover { background: #c36e34; transform: translateY(-1px); }
@@ -141,10 +145,50 @@ button { color: inherit; }
 .connection-box button:hover:not(:disabled) { background: #394a4f; }
 .connection-box button:disabled { opacity: .55; cursor: default; }
 .connection-box .icon-button { width: 34px; padding: 0; font-weight: 800; }
-.connection-dot { width: 10px; height: 10px; background: #7f8a8d; box-shadow: 0 0 0 3px #303a3d; }
+.connection-box strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connection-dot { flex: 0 0 auto; width: 10px; height: 10px; background: #7f8a8d; box-shadow: 0 0 0 3px #303a3d; }
 .connection-dot.connected { background: #70ca8a; box-shadow: 0 0 0 3px #284c34; }
 .connection-dot.connecting { background: #efbd57; animation: blink .8s steps(2) infinite; }
 .connection-dot.error { background: #e65d68; }
+
+/*
+  上の帯は、幅が足りなくなっても項目を減らしません。減らすのは「文字」だけで、
+  押せる場所は最後まで残します。目的の機能へ辿り着けなくなるのがいちばん困るためです。
+
+  畳む順番は、失っても困らないものから：
+    1600px … 説明文と余白（無くても意味が変わらない）
+    1480px … メニューのラベル（アイコンと色が残り、title で名前も出る）
+    1320px … 見出しと小見出し（一度覚えれば読まないもの）
+  広げきった状態で約1590px要るため、最初の段はそのすぐ上から効かせています。
+  最後の段まで畳めば約960pxで収まり、窓の最小幅（1240px）でも全項目が残ります。
+*/
+@media (max-width: 1600px) {
+  .topbar { gap: 9px; padding: 0 16px; }
+  .brand { gap: 9px; }
+  .brand p { display: none; }
+  .game-menu-buttons { gap: 6px; }
+  .connection-box { gap: 8px; }
+  .connection-box > div { min-width: 78px; }
+}
+
+@media (max-width: 1480px) {
+  /* ラベルを外して一文字にします。色と形はそのままなので、位置で覚えた手は迷いません。 */
+  .game-menu-buttons > button > span { display: none; }
+  .game-menu-buttons > button > .menu-glyph { display: none; }
+  .menu-icon {
+    display: grid; place-items: center;
+    width: 24px; height: 24px;
+    font: 700 13px/1 var(--retro-font); font-style: normal;
+  }
+  .game-menu-buttons > button { gap: 5px; padding: 0 7px; }
+}
+
+@media (max-width: 1320px) {
+  .brand h1 { display: none; }
+  .connection-box > div > small, .model-button small { display: none; }
+  .connection-box > div { min-width: 62px; }
+  .model-button { padding: 0 8px; }
+}
 
 .notice { display: flex; justify-content: space-between; align-items: center; padding: 9px 24px; color: #ffd8b3; border-bottom: 1px solid #855a36; background: #493521; font-size: 12px; z-index: 1; }
 .notice button { border: 0; background: transparent; cursor: pointer; font-size: 18px; }
@@ -927,6 +971,39 @@ button.hud-cell:hover { border-color: #f0bd55; background: rgba(38, 26, 66, .78)
 .composer-input { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .composer-hotkey { color: #7f9296; font: 9px Consolas, monospace; font-style: normal; }
 .task-composer.dropping, .steer-input.dropping { outline: 2px dashed #f0bd55; outline-offset: -3px; }
+
+/*
+  赤ペン先生から届いた赤入れの帯。専用画面を作らず、指示欄の真上に置くことで
+  「確かめてから、いつもどおり送る」という一本道のままにしています。
+  赤入れなので、赤ペンの色を左端の1本線だけに使い、画面全体の色は変えません。
+*/
+.bridge-arrival {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px 12px 9px; border-top: 1px solid #3a4a4e;
+  border-left: 3px solid #d0574f; background: #262e30;
+}
+.bridge-arrival-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.bridge-arrival-head .eyebrow { color: #d0574f; font: 700 10px Consolas, monospace; letter-spacing: 1px; }
+.bridge-arrival-head strong { color: #edf1eb; font-size: 12px; }
+.bridge-arrival-mode { padding: 1px 6px; border: 1px solid #56666a; font: 10px Consolas, monospace; }
+.bridge-arrival-mode.edit { color: #2b261c; border-color: #f0bd55; background: #f0bd55; }
+.bridge-arrival-mode.discuss { color: #9fc4d2; }
+.bridge-arrival-queue { color: #8fa3ab; font: 10px Consolas, monospace; }
+.bridge-arrival-path {
+  overflow: hidden; color: #9aa9ad; font: 10px Consolas, monospace;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.bridge-arrival-warn { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #e3b76a; font-size: 10px; }
+.bridge-arrival-actions { display: flex; align-items: center; gap: 8px; }
+.bridge-arrival-actions small { flex: 1; color: #7f9296; font-size: 10px; }
+.bridge-arrival button {
+  height: 22px; padding: 0 8px; color: #d7dedb;
+  border: 1px solid #56666a; background: #2d3a3e; cursor: pointer;
+  font: 10px Consolas, monospace;
+}
+.bridge-arrival button:hover:not(:disabled) { color: #2b261c; border-color: #f0bd55; background: #f0bd55; }
+.bridge-arrival button:disabled { opacity: .4; cursor: default; }
+.bridge-arrival-decline:hover:not(:disabled) { color: #ffe8e8; border-color: #a54a50; background: #70383d; }
 .steer-input { display: flex; flex-direction: column; gap: 6px; }
 
 .attachment-tray { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }

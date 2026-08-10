@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type {
+  BridgeServerStatus,
   CodexEvent,
   PixelCodexApi,
   RemoteGatewayStatus,
@@ -106,6 +107,27 @@ const api: PixelCodexApi = {
     ipcRenderer.on('codex:event', listener);
     return () => ipcRenderer.removeListener('codex:event', listener);
   },
+  setBridgeEnabled: (enabled) => ipcRenderer.invoke('bridge:set-enabled', enabled),
+  getBridgeStatus: () => ipcRenderer.invoke('bridge:status'),
+  // 合図だけを受け、中身は取りに行きます。画面が立ち上がる前に届いたものを
+  // 取りこぼさないためで、赤入れは人が1枚ずつ送るので往復の回数は問題になりません。
+  onBridgeTaskAvailable: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('bridge:available', listener);
+    return () => ipcRenderer.removeListener('bridge:available', listener);
+  },
+  drainBridgeTasks: () => ipcRenderer.invoke('bridge:drain'),
+  onBridgeStatus: (callback) => {
+    const listener = (_event: IpcRendererEvent, value: BridgeServerStatus) => callback(value);
+    ipcRenderer.on('bridge:status', listener);
+    return () => ipcRenderer.removeListener('bridge:status', listener);
+  },
+  onBridgeCancel: (callback) => {
+    const listener = (_event: IpcRendererEvent, value: string) => callback(value);
+    ipcRenderer.on('bridge:cancel', listener);
+    return () => ipcRenderer.removeListener('bridge:cancel', listener);
+  },
+  updateBridgeTask: (update) => ipcRenderer.invoke('bridge:update-task', update),
 };
 
 contextBridge.exposeInMainWorld('pixelCodex', api);
