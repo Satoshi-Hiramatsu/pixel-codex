@@ -2574,7 +2574,7 @@ export function App(): React.JSX.Element {
                       <span className="roster-number">{String(index + 1).padStart(2, '0')}</span>
                       <img
                         className="roster-avatar"
-                        src={characterPortrait(agent.color, agent.duty)}
+                        src={characterPortrait(agent.color, agent.duty, agent.name)}
                         alt=""
                         width={PORTRAIT_SIZE}
                         height={PORTRAIT_SIZE}

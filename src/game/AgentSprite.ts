@@ -114,7 +114,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     const shadow = scene.add.graphics();
     shadow.fillStyle(0x101719, 0.3).fillRect(-12, 13, 24, 4);
     shadow.fillStyle(0x101719, 0.2).fillRect(-8, 17, 16, 2);
-    this.slot = ensureCharacterSheet(scene, agent.color, agent.duty);
+    this.slot = ensureCharacterSheet(scene, agent.color, agent.duty, agent.name);
     this.character = scene.add
       .sprite(0, CHARACTER_Y, ATLAS_KEY, frameName(this.slot, 'down', 0))
       .setOrigin(0.5, 0.5);
@@ -206,10 +206,14 @@ export class AgentSprite extends Phaser.GameObjects.Container {
 
   updateAgent(agent: AgentState): void {
     this.applyPresence(agent.presence ?? 'working');
-    if (this.currentColor !== agent.color || this.currentDuty !== agent.duty) {
+    if (
+      this.currentColor !== agent.color
+      || this.currentDuty !== agent.duty
+      || this.currentName !== agent.name
+    ) {
       this.currentColor = agent.color;
       this.currentDuty = agent.duty;
-      this.slot = ensureCharacterSheet(this.scene, agent.color, agent.duty);
+      this.slot = ensureCharacterSheet(this.scene, agent.color, agent.duty, agent.name);
       this.character.setTexture(ATLAS_KEY, frameName(this.slot, this.facing, 0));
       this.character.play(animationKey(this.slot, this.facing, this.walking));
     }

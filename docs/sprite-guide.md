@@ -8,11 +8,13 @@
 
 | 部品 | 役割 |
 | --- | --- |
-| `assets/sprites/manager-sheet.png` | Manager系が実際に使う256×256 PNG |
-| `src/assets/agentSheet.ts` | PNGの読み込み口とパレット定義 |
-| `tools/build_manager_sheet.py` | 4方向の参照画像を2pxグリッドのシートへ変換するツール |
+| `assets/sprites/*-sheet.png` | 全11担当が実際に使う256×256専用PNG |
+| `assets/concepts/characters/` | ImageGenで作成した各担当の4×4制作参照 |
+| `src/assets/agentSheet.ts` | 担当別PNGの読み込み表とパレット定義 |
+| `tools/build_character_sheets.py` | 追加10担当を2pxグリッドのシートへ一括変換するツール |
+| `tools/build_manager_sheet.py` | 承認済みの統括責任者だけを再生成する専用ツール |
 | `tools/spriteforge.html` | AI で描いた立ち絵を、上のファイルに焼き直す変換ツール |
-| `src/game/characterSheet.ts` | シートを読み、服の色を差し替えて共有アトラスに並べる |
+| `src/game/characterSheet.ts` | 全担当の固有キャラを描き、服色を差し替えて共有アトラスに並べる |
 | `src/game/AgentSprite.ts` | 向きの決定・歩行アニメ・名前や吹き出しの配置 |
 
 **絵をつくる → ツールに通す → `agentSheet.ts` を差し替える**。作業はこれだけです。
@@ -20,12 +22,26 @@
 
 ### PNG素材の読み込み
 
-Manager系は `assets/sprites/manager-sheet.png` を `asset/resource` として同梱します。
-ほかの担当は手続き描画を使うため、素材が増える途中でもビルドできます。
+`src/assets/agentSheet.ts` の `AGENT_SHEET_PNGS` が、全11担当のPNGを
+`asset/resource` として同梱します。起動直後は同期の手続き描画を仮表示し、PNGを読み終えた
+担当から同じ共有アトラス上で専用画像へ差し替えます。読み込み失敗時だけ仮絵が残ります。
 
-`MANAGER_SHEET_PNG` が `null` のあいだは、`characterSheet.ts` が2pxグリッドで
-**担当別キャラ**を描いて動きます。`duty` に応じて Manager / Scout / Builder /
-Checker の4シルエットへ分かれるため、絵が無くても個体を判別できます。
+`duty` に応じて11種類の髪型・服装・装備へ分かれ、さらに人物名由来のピクセル徽章を
+全16コマへ焼き込むため、同じ担当を複数雇っても完全に同じ画像にはなりません。
+
+| 担当 | 固有の見分け方 |
+| --- | --- |
+| 統括 | 丸眼鏡、ベスト、ヘッドセット |
+| 企画 | 横分けの髪、ネクタイ、企画カード |
+| 調査 | フィールドキャップ、肩掛けバッグ、スキャナ |
+| 実装 | 跳ねた髪、フード、工具ベルト |
+| テスト | ボブ、角眼鏡、チェック徽章 |
+| レビュー | 銀髪、細縁眼鏡、赤ペン |
+| デザイン | ベレー帽、スカーフ、カラーパレット |
+| 経理 | 七三分け、丸眼鏡、帳簿、ベスト |
+| 通信 | 通信帽、大型ヘッドセット、アンテナ端末 |
+| 文書 | 長い結び髪、原稿鞄、メモ帳 |
+| 汎用 | ニット帽、ワークベスト、社員証 |
 
 ### なぜ 1枚のアトラスにまとめるのか
 
@@ -90,7 +106,7 @@ AI に描かせるときは「全身が枠内に入っていれば良い」く�
 その4方向をアンカーにして、歩行3コマを追加します。
 
 生成した16コマはそのまま採用せず、必ず方向・足運び・装備品をセル単位で確認し、
-`tools/build_manager_sheet.py` または spriteforge で整列・縮小・減色します。
+`tools/build_character_sheets.py` または spriteforge で整列・縮小・減色します。
 
 ```
  正面の完成形 ──▶ 4方向の直立を固定 ──▶ 4方向×4コマへ展開
@@ -188,6 +204,9 @@ else facing = 'up';
 - **等倍表示**: Phaser 側で `pixelArt: true` と `roundPixels: true` を設定済みなので、
   拡大してもぼやけません。`FRAME_WIDTH` / `FRAME_HEIGHT` を変えるときは、
   `AgentSprite` の `CHARACTER_Y` / `HEAD_LIFT` / 当たり判定もあわせて調整してください。
-- **さらに個体差を増やしたい**: `characterVariantForDuty()` の分類を増やすか、
-  `SheetPalette` に `hair` / `skin` / `accessory` を足し、`buildShirtMap()` と同じ要領で
-  複数の色ランプを差し替えます。
+- **個体差の維持**: `characterVariantForDuty()` は全 `AgentDuty` を別デザインとして扱います。
+  人物名は共有アトラスのキーと8bitピクセル徽章の両方に使うため、呼び出し側では
+  `ensureCharacterSheet()` / `characterPortrait()` に必ず同じ名前を渡してください。
+- **専用画像の追加**: `assets/concepts/characters/<duty>-walk-cycle-reference.png` を置き、
+  `tools/build_character_sheets.py` の `SOURCES` と `src/assets/agentSheet.ts` の
+  `AGENT_SHEET_PNGS`へ同じ担当を追加します。
