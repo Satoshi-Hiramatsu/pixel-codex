@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 
-import type { AgentPresence, AgentState } from '../types';
+import type { AgentDuty, AgentPresence, AgentState } from '../types';
 import {
   animationKey,
   ATLAS_KEY,
@@ -34,8 +34,8 @@ const breakTimeMessages = [
 /** 玄関まで歩ききってから、姿が消えるまでの時間。 */
 const LEAVE_FADE_DURATION = 460;
 
-/** 1マス（40px）を歩ききるのにかける時間。 */
-const STEP_DURATION = 210;
+/** 1マス（40px）につき片足1回を踏み出す歩行速度。 */
+const STEP_DURATION = 260;
 
 /**
  * 64×64 のコマを、足元がタイルの中心（＝影の位置）に来るように置くための縦ずれ。
@@ -71,6 +71,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
   private currentSpeech: string;
   private currentSpeechKind?: AgentState['speechKind'];
   private currentColor: number;
+  private currentDuty: AgentDuty;
   private currentPresence: AgentPresence;
   private speechTimer?: Phaser.Time.TimerEvent;
   private breakMessageIndex: number;
@@ -83,6 +84,9 @@ export class AgentSprite extends Phaser.GameObjects.Container {
   private leaving = false;
   private fadeTween?: Phaser.Tweens.Tween;
   private leaveCheck?: Phaser.Time.TimerEvent;
+  /** 補間を使わず、2px刻みで待機・作業姿勢を切り替えるタイマー。 */
+  private motionTimer?: Phaser.Time.TimerEvent;
+  private motionPhase = false;
   /** 現在地と目的地はタイル単位で持ち、経路探索と共有します。 */
   private tile: Tile;
   private destination: Tile;
@@ -96,6 +100,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.currentSpeech = agent.speech || agent.activity;
     this.currentSpeechKind = agent.speechKind;
     this.currentColor = agent.color;
+    this.currentDuty = agent.duty;
     // 出社した状態から始めます。休憩中や退勤済みの人は、直後に呼ばれる
     // `updateAgent` が移動と退出をそのまま演じてくれます。
     this.currentPresence = 'working';
@@ -105,9 +110,11 @@ export class AgentSprite extends Phaser.GameObjects.Container {
 
     const textResolution = textResolutionFor(scene);
 
-    // 真上から見た影。スプライトには焼き込まず、重なっても自然に見えるよう別物にしています。
-    const shadow = scene.add.ellipse(0, 16, 30, 13, 0x101719, 0.26);
-    this.slot = ensureCharacterSheet(scene, agent.color);
+    // 靴へ2px重なるハードエッジの接地影。大きな楕円影より浮いて見えません。
+    const shadow = scene.add.graphics();
+    shadow.fillStyle(0x101719, 0.3).fillRect(-12, 13, 24, 4);
+    shadow.fillStyle(0x101719, 0.2).fillRect(-8, 17, 16, 2);
+    this.slot = ensureCharacterSheet(scene, agent.color, agent.duty);
     this.character = scene.add
       .sprite(0, CHARACTER_Y, ATLAS_KEY, frameName(this.slot, 'down', 0))
       .setOrigin(0.5, 0.5);
@@ -168,6 +175,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.drawNameBackground();
     this.drawActivityBackground();
     this.configureSpeechCycle(agent.status, this.currentPresence);
+    this.configureCharacterMotion();
     this.setSize(HIT_WIDTH, HIT_HEIGHT);
     this.setInteractive(hitArea(), Phaser.Geom.Rectangle.Contains);
     this.on('pointerover', () => this.setScale(1.06));
@@ -198,9 +206,10 @@ export class AgentSprite extends Phaser.GameObjects.Container {
 
   updateAgent(agent: AgentState): void {
     this.applyPresence(agent.presence ?? 'working');
-    if (this.currentColor !== agent.color) {
+    if (this.currentColor !== agent.color || this.currentDuty !== agent.duty) {
       this.currentColor = agent.color;
-      this.slot = ensureCharacterSheet(this.scene, agent.color);
+      this.currentDuty = agent.duty;
+      this.slot = ensureCharacterSheet(this.scene, agent.color, agent.duty);
       this.character.setTexture(ATLAS_KEY, frameName(this.slot, this.facing, 0));
       this.character.play(animationKey(this.slot, this.facing, this.walking));
     }
@@ -228,6 +237,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
       this.drawBadge(agent.status);
       this.drawSpeech(agent);
       this.configureSpeechCycle(agent.status, this.currentPresence);
+      this.configureCharacterMotion();
       const scene = this.scene;
       if (!scene?.tweens || !this.active) return;
       scene.tweens.add({
@@ -254,6 +264,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     if (presence === 'left') {
       this.leaving = true;
       this.clearSpeechTimer();
+      this.clearCharacterMotion();
       this.disableInteractive();
       // 玄関にもう立っていて歩く必要がないときは、そのまま消えます。歩き出す
       // なら `walkPath` の完了時に消えるので、この確認は空振りになります。
@@ -270,6 +281,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.leaveCheck = undefined;
     if (previous === 'left') this.returnToFloor();
     this.configureSpeechCycle(this.currentStatus, presence);
+    if (!this.walking) this.configureCharacterMotion();
   }
 
   /** 退勤していた人が呼び戻されたとき。玄関の内側から歩き直します。 */
@@ -306,6 +318,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
     this.leaveCheck = undefined;
     this.fadeTween?.remove();
     this.fadeTween = undefined;
+    this.clearCharacterMotion();
     this.walkTween?.stop();
     this.walkTween = undefined;
     super.destroy(fromScene);
@@ -315,7 +328,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
    * タイルの列を 1マスずつ、上下左右だけで歩きます。斜め移動はしません。
    * 途中の家族や同僚は経路探索の段階で避けているので、ここでは素直に辿るだけです。
    */
-  walkPath(path: Tile[]): void {
+  walkPath(path: Tile[], finalFacing?: Facing): void {
     const scene = this.scene;
     if (!scene?.tweens || !this.active) return;
     if (path.length === 0) return;
@@ -342,6 +355,7 @@ export class AgentSprite extends Phaser.GameObjects.Container {
       tweens: timeline,
       onComplete: () => {
         this.walkTween = undefined;
+        if (finalFacing) this.facing = finalFacing;
         this.playWalk(false);
         // 玄関に着いた退勤者は、ここでフロアから姿を消します。
         if (this.leaving) this.fadeOut();
@@ -357,11 +371,12 @@ export class AgentSprite extends Phaser.GameObjects.Container {
   }
 
   /** 経路が見つからなかった時などに、瞬間移動でタイルを合わせます。 */
-  snapTo(tile: Tile): void {
+  snapTo(tile: Tile, finalFacing?: Facing): void {
     this.walkTween?.stop();
     this.walkTween = undefined;
     this.tile = { ...tile };
     this.destination = { ...tile };
+    if (finalFacing) this.facing = finalFacing;
     this.setPosition(center(tile.col), center(tile.row));
     this.playWalk(false);
     if (this.leaving) this.fadeOut();
@@ -384,8 +399,46 @@ export class AgentSprite extends Phaser.GameObjects.Container {
 
   private playWalk(moving: boolean): void {
     const key = animationKey(this.slot, this.facing, moving);
-    if (this.character.anims.currentAnim?.key === key) return;
-    if (this.scene?.anims.exists(key)) this.character.play(key);
+    if (this.character.anims.currentAnim?.key !== key && this.scene?.anims.exists(key)) {
+      this.character.play(key);
+    }
+    if (moving) this.clearCharacterMotion();
+    else this.configureCharacterMotion();
+  }
+
+  private clearCharacterMotion(): void {
+    this.motionTimer?.remove(false);
+    this.motionTimer = undefined;
+    this.motionPhase = false;
+    this.character?.setPosition(0, CHARACTER_Y);
+  }
+
+  /**
+   * 連続Tweenでは中間座標が半端になるため、タイマーで2pxずつ姿勢を切り替えます。
+   * 待機はゆっくり上下、作業中は手元を動かしているように小さく左右へ揺れます。
+   */
+  private configureCharacterMotion(): void {
+    this.clearCharacterMotion();
+    if (this.walking || this.leaving || !this.scene?.time) return;
+    const resting = this.currentStatus === 'idle' || this.currentStatus === 'done';
+    const delay = this.currentStatus === 'error' ? 180 : resting ? 900 : 420;
+    this.motionTimer = this.scene.time.addEvent({
+      delay,
+      loop: true,
+      callback: () => {
+        if (!this.active || this.walking || this.leaving) return;
+        this.motionPhase = !this.motionPhase;
+        if (resting || this.currentStatus === 'planning' || this.currentStatus === 'approval') {
+          this.character.setPosition(0, CHARACTER_Y - (this.motionPhase ? 2 : 0));
+          return;
+        }
+        if (this.currentStatus === 'error') {
+          this.character.setPosition(this.motionPhase ? -2 : 2, CHARACTER_Y);
+          return;
+        }
+        this.character.setPosition(this.motionPhase ? 2 : 0, CHARACTER_Y);
+      },
+    });
   }
 
   private drawBadge(status: AgentState['status']): void {

@@ -18,7 +18,7 @@
   .col { min-width: 300px; }
 
   /* --- コマのグリッド --- */
-  .grid { display: grid; grid-template-columns: 56px repeat(3, 96px); gap: 6px; align-items: center; }
+  .grid { display: grid; grid-template-columns: 56px repeat(4, 96px); gap: 6px; align-items: center; }
   .grid .head { color: #8a7346; font-size: 10px; text-align: center; }
   .grid .rowlabel { color: #6f5c38; font-size: 11px; }
   .cell {
@@ -53,7 +53,7 @@
   .anim { text-align: center; }
   .anim canvas { width: 128px; height: 128px; image-rendering: pixelated; border: 2px solid #c4b078; background: #46707d; display: block; }
   .anim span { color: #6f5c38; font-size: 10px; }
-  #sheetPreview { image-rendering: pixelated; border: 2px solid #c4b078; background: #46707d; width: 384px; height: 512px; }
+  #sheetPreview { image-rendering: pixelated; border: 2px solid #c4b078; background: #46707d; width: 512px; height: 512px; }
 
   /* --- パレット --- */
   #palette { display: grid; grid-template-columns: repeat(auto-fill, 120px); gap: 5px; }
@@ -74,7 +74,7 @@
 
 <h1>spriteforge — Pixel Codex キャラシート変換</h1>
 <p class="lead">
-  画像生成AIで描いた 4方向の立ち絵を、そのまま使える 192×256 のドット絵シートに焼き直します。<br>
+  画像生成AIで描いた 4方向の立ち絵を、そのまま使える 256×256 のドット絵シートに焼き直します。<br>
   仕上がりは <code>src/assets/agentSheet.ts</code> として書き出されるので、中身を丸ごと差し替えてください。
 </p>
 
@@ -83,7 +83,7 @@
     <h2>1. 立ち絵を入れる</h2>
     <div class="grid" id="grid"></div>
     <p class="note">
-      左の列（直立）だけが必須です。右の 2列は歩行コマとして自動生成しますが、<br>
+      左の列（直立）だけが必須です。右の 3列は歩行コマとして自動生成しますが、<br>
       自分で描いた画像を落とせばそちらが優先されます。
     </p>
   </div>
@@ -131,11 +131,6 @@
       <input type="range" id="legBand" min="10" max="60" value="35">
       <output id="legBandOut"></output>
     </div>
-    <div class="field">
-      <label>上下のゆれ(px)</label>
-      <input type="range" id="bob" min="0" max="3" value="1">
-      <output id="bobOut"></output>
-    </div>
     <p class="note">
       フロアのタイルは 40px です。キャラの高さ 56px あたりが、足元が 1マスに収まって<br>
       頭が上のマスへはみ出す MOTHER2 らしい比率になります。
@@ -152,7 +147,7 @@
 
 <h2>4. できあがり</h2>
 <div class="preview">
-  <div><canvas id="sheetPreview" width="192" height="256"></canvas></div>
+  <div><canvas id="sheetPreview" width="256" height="256"></canvas></div>
   <div class="preview" id="anims"></div>
 </div>
 
@@ -166,13 +161,13 @@
   'use strict';
 
   var FRAME = 64;
-  var COLS = 3;
+  var COLS = 4;
   var FACINGS = ['down', 'left', 'right', 'up'];
   var FACING_LABEL = { down: '正面 down', left: '左 left', right: '右 right', up: '背面 up' };
-  var COL_LABEL = ['0 直立（必須）', '1 右足前', '2 左足前'];
+  var COL_LABEL = ['0 直立（必須）', '1 大股A', '2 足をそろえる', '3 大股B'];
   var SHEET_W = FRAME * COLS;
   var SHEET_H = FRAME * FACINGS.length;
-  var WALK_ORDER = [1, 0, 2, 0];
+  var WALK_ORDER = [1, 2, 3, 2];
 
   /** key `${facing}-${col}` -> HTMLImageElement */
   var sources = {};
@@ -191,8 +186,7 @@
       footMargin: Number(document.getElementById('footMargin').value),
       colors: Number(document.getElementById('colors').value),
       stride: Number(document.getElementById('stride').value),
-      legBand: Number(document.getElementById('legBand').value) / 100,
-      bob: Number(document.getElementById('bob').value)
+      legBand: Number(document.getElementById('legBand').value) / 100
     };
   }
 
@@ -343,27 +337,31 @@
 
   // -------------------------------------------------------------- 歩行コマ
 
-  /**
-   * 矩形のなかだけで中身をずらします。はみ出したぶんは捨てるので、
-   * 「脚を持ち上げる」＝脚が短くなる、という手描きのドット絵と同じ動きになります。
-   */
-  function shiftRegion(img, x0, y0, x1, y1, dx, dy) {
+  /** 複数の手足を、変更前の同じ画像から独立してずらします。 */
+  function shiftRegions(img, moves) {
     var w = img.width;
+    var h = img.height;
     var src = new Uint8ClampedArray(img.data);
     var d = img.data;
-    var x, y, i;
-    for (y = y0; y < y1; y++) {
-      for (x = x0; x < x1; x++) {
-        i = (y * w + x) * 4;
-        d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
+    var x, y, i, m;
+    for (m = 0; m < moves.length; m++) {
+      var clear = moves[m];
+      for (y = clear.y0; y < clear.y1; y++) {
+        for (x = clear.x0; x < clear.x1; x++) {
+          i = (y * w + x) * 4;
+          d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0;
+        }
       }
     }
-    for (y = y0; y < y1; y++) {
-      for (x = x0; x < x1; x++) {
-        var ny = y + dy, nx = x + dx;
-        if (ny < y0 || ny >= y1 || nx < x0 || nx >= x1) continue;
-        var s = (y * w + x) * 4, t = (ny * w + nx) * 4;
-        d[t] = src[s]; d[t + 1] = src[s + 1]; d[t + 2] = src[s + 2]; d[t + 3] = src[s + 3];
+    for (m = 0; m < moves.length; m++) {
+      var move = moves[m];
+      for (y = move.y0; y < move.y1; y++) {
+        for (x = move.x0; x < move.x1; x++) {
+          var ny = y + move.dy, nx = x + move.dx;
+          if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
+          var s = (y * w + x) * 4, t = (ny * w + nx) * 4;
+          d[t] = src[s]; d[t + 1] = src[s + 1]; d[t + 2] = src[s + 2]; d[t + 3] = src[s + 3];
+        }
       }
     }
   }
@@ -372,30 +370,51 @@
     return new ImageData(new Uint8ClampedArray(data.data), data.width, data.height);
   }
 
-  /**
-   * 直立コマ 1枚から、右足前 / 左足前を作ります。
-   * よこ向きは脚のかたまりを前後にずらし、正面・背面は左右の脚を交互に持ち上げます。
-   */
+  /** 直立から、大股A / 沈み込み / 大股B の3コマを作ります。 */
   function makeWalkFrame(base, facing, phase, opts) {
     var out = copyFrame(base);
     var bb = bbox(base);
-    if (!bb || opts.stride === 0) {
-      if (opts.bob) shiftRegion(out, 0, 0, FRAME, FRAME, 0, -opts.bob);
-      return out;
-    }
+    if (!bb) return out;
+    if (phase === 2) return out;
+    if (opts.stride === 0) return out;
+
+    var sign = phase === 1 ? 1 : -1;
     var bandTop = Math.round(bb.y + bb.h * (1 - opts.legBand));
     var bandBottom = bb.y + bb.h;
+    var armTop = Math.round(bb.y + bb.h * 0.42);
+    var armWidth = Math.max(2, Math.round(bb.w * 0.25));
+    var midX = Math.round(bb.x + bb.w / 2);
+    var armSwing = Math.max(1, opts.stride - 1);
+    var moves = [];
 
     if (facing === 'left' || facing === 'right') {
       var forward = facing === 'right' ? 1 : -1;
-      var dx = forward * opts.stride * (phase === 1 ? 1 : -1);
-      shiftRegion(out, bb.x, bandTop, bb.x + bb.w, bandBottom, dx, 0);
+      moves.push(
+        { x0: bb.x, y0: bandTop, x1: midX, y1: bandBottom,
+          dx: -forward * opts.stride * sign, dy: sign < 0 ? 1 : 0 },
+        { x0: midX, y0: bandTop, x1: bb.x + bb.w, y1: bandBottom,
+          dx: forward * opts.stride * sign, dy: sign > 0 ? 1 : 0 }
+      );
+      if (facing === 'right') {
+        moves.push({ x0: bb.x + bb.w - armWidth, y0: armTop,
+          x1: bb.x + bb.w, y1: bandTop, dx: 0, dy: -armSwing * sign });
+      } else {
+        moves.push({ x0: bb.x, y0: armTop, x1: bb.x + armWidth,
+          y1: bandTop, dx: 0, dy: -armSwing * sign });
+      }
     } else {
-      var midX = Math.round(bb.x + bb.w / 2);
-      if (phase === 1) shiftRegion(out, bb.x, bandTop, midX, bandBottom, 0, -opts.stride);
-      else shiftRegion(out, midX, bandTop, bb.x + bb.w, bandBottom, 0, -opts.stride);
+      moves.push(
+        { x0: bb.x, y0: bandTop, x1: midX, y1: bandBottom,
+          dx: 0, dy: sign > 0 ? -opts.stride : 0 },
+        { x0: midX, y0: bandTop, x1: bb.x + bb.w, y1: bandBottom,
+          dx: 0, dy: sign < 0 ? -opts.stride : 0 },
+        { x0: bb.x, y0: armTop, x1: bb.x + armWidth, y1: bandTop,
+          dx: 0, dy: armSwing * sign },
+        { x0: bb.x + bb.w - armWidth, y0: armTop,
+          x1: bb.x + bb.w, y1: bandTop, dx: 0, dy: -armSwing * sign }
+      );
     }
-    if (opts.bob) shiftRegion(out, 0, 0, FRAME, FRAME, 0, -opts.bob);
+    shiftRegions(out, moves);
     return out;
   }
 
@@ -540,7 +559,7 @@
         host.appendChild(wrap);
         animCanvases[f] = canvas;
       });
-      setInterval(tick, 1000 / 7);
+      setInterval(tick, 1000 / 8);
     }
     tick();
   }
@@ -599,8 +618,8 @@
       '  shirt: string[];',
       '}',
       '',
-      '/** 192×256（64px × 3列 × 4行）のドット絵シート。 */',
-      "export const AGENT_SHEET_PNG: string | null =\n  '" + url + "';",
+      '/** 256×256（64px × 4列 × 4行）のドット絵シート。 */',
+      "export const MANAGER_SHEET_PNG: string | null =\n  '" + url + "';",
       '',
       'export const AGENT_SHEET_PALETTE: SheetPalette = {',
       '  shirt: [' + shirt.map(function (h) { return "'" + h + "'"; }).join(', ') + '],',
@@ -727,7 +746,7 @@
   }
 
   function bindControls() {
-    ['bodyHeight', 'footMargin', 'colors', 'stride', 'legBand', 'bob'].forEach(function (id) {
+    ['bodyHeight', 'footMargin', 'colors', 'stride', 'legBand'].forEach(function (id) {
       var input = document.getElementById(id);
       var out = document.getElementById(id + 'Out');
       function sync() { out.value = input.value; }

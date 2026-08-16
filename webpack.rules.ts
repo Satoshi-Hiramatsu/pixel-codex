@@ -28,4 +28,11 @@ export const rules: Required<ModuleOptions>['rules'] = [
       },
     },
   },
+  {
+    test: /\.png$/i,
+    type: 'asset/resource',
+    generator: {
+      filename: 'images/[name].[contenthash][ext]',
+    },
+  },
 ];

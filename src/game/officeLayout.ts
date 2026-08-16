@@ -170,6 +170,8 @@ export interface Tile {
   row: number;
 }
 
+export type StationFacing = 'down' | 'left' | 'right' | 'up';
+
 /**
  * Where a member of staff stands. Idle staff go back to the room they belong
  * to rather than all crowding into the lounge, so the floor stays readable.
@@ -239,6 +241,20 @@ export function stationFor(
   }
   if (status === 'planning' && duty === 'director') return dutyStations.director as Tile;
   return statusStations[status];
+}
+
+/** Stop facing the workstation instead of keeping the final walking direction. */
+export function stationFacingFor(
+  presence: AgentPresence = 'working',
+  seat = 0,
+): StationFacing {
+  if (presence === 'left') return 'down';
+  if (presence === 'lounge') {
+    const loungeSeat = loungeSeats[((seat % loungeSeats.length) + loungeSeats.length) % loungeSeats.length];
+    return loungeSeat.row === 12 ? 'down' : 'up';
+  }
+  // Every active station is one tile below its desk, meeting table or counter.
+  return 'up';
 }
 
 export function zoneAt(col: number, row: number): Zone | undefined {

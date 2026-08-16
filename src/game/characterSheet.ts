@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 
-import { AGENT_SHEET_PALETTE, AGENT_SHEET_PNG, type SheetPalette } from '../assets/agentSheet';
+import { AGENT_SHEET_PALETTE, MANAGER_SHEET_PNG, type SheetPalette } from '../assets/agentSheet';
+import type { AgentDuty } from '../types';
+import { PIXEL_PALETTE, PIXEL_UNIT } from './pixelArt';
 
 /**
  * 4方向スプライトの土台。
@@ -10,12 +12,11 @@ import { AGENT_SHEET_PALETTE, AGENT_SHEET_PNG, type SheetPalette } from '../asse
  *   列 = アニメのコマ（0:直立 / 1:右足前 / 2:左足前）
  *   行 = 向き（0:正面 down / 1:左 left / 2:右 right / 3:背面 up）
  *
- * 1コマ 64×64、シート全体で 192×256 です。
+ * 1コマ 64×64、シート全体で 256×256 です。
  *
  * ■ 絵の出どころ（マスターシート）
- *   `src/assets/agentSheet.ts` に data URI があればそれを使い、無ければ
- *   下の手続き描画で仮のキャラを描きます。どちらの場合も服は白〜グレーで、
- *   社員ごとの色は「パレット差し替え」で後から入れます。
+ *   Manager系は `assets/sprites/manager-sheet.png` を使い、ほかの担当は
+ *   下の手続き描画でキャラを描きます。どちらも共有アトラスへまとめます。
  *
  * ■ なぜ 1枚のアトラスに焼くのか
  *   社員の色ごとにテクスチャを作ると、色の数だけテクスチャが切り替わって
@@ -26,10 +27,19 @@ export const FRAME_WIDTH = 64;
 export const FRAME_HEIGHT = 64;
 
 export type Facing = 'down' | 'left' | 'right' | 'up';
+export type CharacterVariant = 'manager' | 'scout' | 'builder' | 'checker';
+
+/** 担当から、遠目でも判別できる4種類のシルエットへ振り分けます。 */
+export function characterVariantForDuty(duty: AgentDuty): CharacterVariant {
+  if (duty === 'director' || duty === 'planner') return 'manager';
+  if (duty === 'researcher' || duty === 'writer' || duty === 'communicator') return 'scout';
+  if (duty === 'coder' || duty === 'designer') return 'builder';
+  return 'checker';
+}
 
 /** シートの行順。PNG に差し替えるときも、この順番に並べてください。 */
 export const facings: Facing[] = ['down', 'left', 'right', 'up'];
-const FRAMES_PER_FACING = 3;
+const FRAMES_PER_FACING = 4;
 
 /** マスターシート 1枚ぶんの大きさ。 */
 export const SHEET_WIDTH = FRAME_WIDTH * FRAMES_PER_FACING;
@@ -38,7 +48,7 @@ export const SHEET_HEIGHT = FRAME_HEIGHT * 4;
 /** 全社員が共有する、たった 1枚のテクスチャ。 */
 export const ATLAS_KEY = 'agent-atlas';
 /** アトラスに並べられる色の数。これを超えたら古い枠から使い回します。 */
-const MAX_SLOTS = 16;
+const MAX_SLOTS = 32;
 const SLOTS_PER_ROW = 4;
 const ATLAS_WIDTH = SHEET_WIDTH * SLOTS_PER_ROW;
 const ATLAS_HEIGHT = SHEET_HEIGHT * Math.ceil(MAX_SLOTS / SLOTS_PER_ROW);
@@ -49,23 +59,24 @@ const ATLAS_HEIGHT = SHEET_HEIGHT * Math.ceil(MAX_SLOTS / SLOTS_PER_ROW);
 
 const SKIN = '#e6b88c';
 const SKIN_SHADE = '#c9986f';
-const HAIR = '#3a2b24';
-const HAIR_LIGHT = '#4b3930';
-const OUTLINE = '#1e282c';
+const OUTLINE = `#${PIXEL_PALETTE.outline.toString(16).padStart(6, '0')}`;
 const SHOE = '#2b3238';
 const TROUSER = '#3f4a52';
 const TROUSER_SHADE = '#37424a';
+const GLASSES = '#b98130';
+const DEVICE = '#344951';
+const DEVICE_LIGHT = '#718a98';
 /** 服は必ずこの 2色で描きます。`AGENT_SHEET_PALETTE.shirt` と一致させてください。 */
 const SHIRT_LIGHT = '#ffffff';
 const SHIRT_DARK = '#c7c7c7';
 
 /**
- * 下絵は 32×40 の座標で描き、この倍率で 48×60 に引き伸ばします。
- * `box()` が拡大後に整数へ丸めるので、斜めのにじみは出ません。
+ * 下絵は 24×28 の論理座標で描き、すべてを正確に2倍します。
+ * これにより輪郭も細部も常に 2px グリッドへそろいます。
  */
-const ART_SCALE = 1.5;
-const ART_WIDTH = 32 * ART_SCALE;
-const ART_HEIGHT = 40 * ART_SCALE;
+const ART_SCALE = PIXEL_UNIT;
+const ART_WIDTH = 24 * ART_SCALE;
+const ART_HEIGHT = 28 * ART_SCALE;
 /** コマの中で水平中央に置き、足元を下端から 4px 上にそろえます。 */
 const ART_OFFSET_X = Math.round((FRAME_WIDTH - ART_WIDTH) / 2);
 const ART_OFFSET_Y = FRAME_HEIGHT - 4 - ART_HEIGHT;
@@ -78,16 +89,15 @@ function box(
   height: number,
   color: string,
 ): void {
-  // 左上と右下をそれぞれ丸めることで、四角どうしのすき間をなくします。
-  const left = Math.round(x * ART_SCALE);
-  const top = Math.round(y * ART_SCALE);
-  const right = Math.round((x + width) * ART_SCALE);
-  const bottom = Math.round((y + height) * ART_SCALE);
+  const left = x * ART_SCALE;
+  const top = y * ART_SCALE;
+  const right = (x + width) * ART_SCALE;
+  const bottom = (y + height) * ART_SCALE;
   context.fillStyle = color;
   context.fillRect(left, top, right - left, bottom - top);
 }
 
-/** 縁取り付きの四角。ドット絵らしい輪郭を 1px ぶんつけます。 */
+/** 縁取り付きの四角。論理1px＝画面2pxの輪郭をつけます。 */
 function outlinedBox(
   context: CanvasRenderingContext2D,
   x: number,
@@ -105,78 +115,203 @@ interface LegOffsets {
   right: number;
 }
 
-/** 3コマぶんの足の上下。0コマ目は直立、1/2コマ目で左右の足を交互に出します。 */
+/** 4コマぶんの足運び。0は直立、1/3は大股、2は足をそろえる中間姿勢です。 */
 function legOffsets(frame: number): LegOffsets {
   if (frame === 1) return { left: -2, right: 1 };
-  if (frame === 2) return { left: 1, right: -2 };
+  if (frame === 3) return { left: 1, right: -2 };
   return { left: 0, right: 0 };
 }
 
-function drawFacingDown(context: CanvasRenderingContext2D, frame: number): void {
+function armOffsets(frame: number): LegOffsets {
+  if (frame === 1) return { left: 2, right: -2 };
+  if (frame === 3) return { left: -2, right: 2 };
+  return { left: 0, right: 0 };
+}
+
+interface VariantColors {
+  hair: string;
+  hairLight: string;
+}
+
+const VARIANT_COLORS: Record<CharacterVariant, VariantColors> = {
+  manager: { hair: '#5a3828', hairLight: '#8a5733' },
+  scout: { hair: '#263d4b', hairLight: '#3f6372' },
+  builder: { hair: '#663628', hairLight: '#9a5034' },
+  checker: { hair: '#294844', hairLight: '#477064' },
+};
+
+function drawLegs(context: CanvasRenderingContext2D, frame: number, side = false): void {
   const legs = legOffsets(frame);
-  box(context, 10, 30 + legs.left, 5, 8 - legs.left, TROUSER);
-  box(context, 17, 30 + legs.right, 5, 8 - legs.right, TROUSER);
-  box(context, 10, 36, 5, 2, SHOE);
-  box(context, 17, 36, 5, 2, SHOE);
-  outlinedBox(context, 7, 18, 18, 13, SHIRT_LIGHT);
-  box(context, 7, 28, 18, 3, SHIRT_DARK);
-  outlinedBox(context, 4, 19, 3, 9, SKIN);
-  outlinedBox(context, 25, 19, 3, 9, SKIN);
-  // 顔は正面だけ全部見えます。
-  outlinedBox(context, 8, 4, 16, 15, HAIR);
-  box(context, 10, 11, 12, 8, SKIN);
-  box(context, 10, 17, 12, 2, SKIN_SHADE);
-  box(context, 12, 13, 2, 2, OUTLINE);
-  box(context, 18, 13, 2, 2, OUTLINE);
-  box(context, 9, 5, 7, 2, HAIR_LIGHT);
+  const leftX = side ? 9 : 7;
+  const rightX = side ? 11 : 13;
+  box(context, leftX, 20 + legs.left, 4, 7 - legs.left, TROUSER);
+  box(context, rightX, 20 + legs.right, 4, 7 - legs.right, side ? TROUSER_SHADE : TROUSER);
+  box(context, leftX, 26, 4, 2, SHOE);
+  if (!side) box(context, rightX, 26, 4, 2, SHOE);
+}
+
+function drawSideLegs(
+  context: CanvasRenderingContext2D,
+  frame: number,
+  direction: -1 | 1,
+): void {
+  const stride = frame === 1 ? 1 : frame === 3 ? -1 : 0;
+  const leftX = stride === 0 ? 9 : 10 - direction * stride * 3;
+  const rightX = stride === 0 ? 11 : 10 + direction * stride * 3;
+  const leftLift = stride < 0 ? 1 : 0;
+  const rightLift = stride > 0 ? 1 : 0;
+
+  box(context, leftX, 20 + leftLift, 4, 7 - leftLift, TROUSER);
+  box(context, rightX, 20 + rightLift, 4, 7 - rightLift, TROUSER_SHADE);
+  box(context, leftX + (direction < 0 ? -1 : 0), 26, 5, 2, SHOE);
+  box(context, rightX + (direction < 0 ? -1 : 0), 26, 5, 2, SHOE);
+}
+
+function drawFrontAccessory(
+  context: CanvasRenderingContext2D,
+  variant: CharacterVariant,
+): void {
+  if (variant === 'manager') {
+    // ベストの前合わせ、ポケット、眼鏡、ヘッドセット。
+    box(context, 11, 12, 1, 8, SHIRT_DARK);
+    box(context, 6, 16, 3, 2, SHIRT_DARK);
+    box(context, 15, 16, 3, 2, SHIRT_DARK);
+    box(context, 6, 8, 5, 3, GLASSES);
+    box(context, 13, 8, 5, 3, GLASSES);
+    box(context, 11, 9, 2, 1, GLASSES);
+    box(context, 7, 9, 3, 1, OUTLINE);
+    box(context, 14, 9, 3, 1, OUTLINE);
+    box(context, 18, 6, 2, 5, DEVICE);
+    box(context, 19, 7, 1, 2, GLASSES);
+    box(context, 17, 11, 2, 1, DEVICE);
+  } else if (variant === 'scout') {
+    // 斜め掛けバッグと小型スキャナ。
+    box(context, 7, 12, 2, 8, DEVICE);
+    box(context, 8, 13, 8, 2, DEVICE);
+    box(context, 15, 16, 4, 4, DEVICE);
+    box(context, 16, 17, 2, 1, DEVICE_LIGHT);
+  } else if (variant === 'builder') {
+    // 工具ベルトと胸ポケット。
+    box(context, 5, 18, 14, 2, DEVICE);
+    box(context, 10, 18, 4, 2, GLASSES);
+    box(context, 15, 14, 3, 3, SHIRT_DARK);
+  } else {
+    // チェッカーの角眼鏡と胸のチェックマーク。
+    box(context, 6, 8, 5, 3, DEVICE);
+    box(context, 13, 8, 5, 3, DEVICE);
+    box(context, 11, 9, 2, 1, DEVICE);
+    box(context, 7, 9, 3, 1, DEVICE_LIGHT);
+    box(context, 14, 9, 3, 1, DEVICE_LIGHT);
+    box(context, 15, 14, 1, 3, DEVICE);
+    box(context, 16, 16, 2, 1, DEVICE);
+  }
+}
+
+function drawFacingDown(
+  context: CanvasRenderingContext2D,
+  frame: number,
+  variant: CharacterVariant,
+): void {
+  const colors = VARIANT_COLORS[variant];
+  const arms = armOffsets(frame);
+  drawLegs(context, frame);
+  outlinedBox(context, 5, 11, 14, 9, SHIRT_LIGHT);
+  box(context, 5, 18, 14, 2, SHIRT_DARK);
+  outlinedBox(context, 3, 12 + arms.left, 2, 7, SKIN);
+  outlinedBox(context, 19, 12 + arms.right, 2, 7, SKIN);
+  outlinedBox(context, 5, 1, 14, 10, colors.hair);
+  box(context, 6, 5, 12, 6, SKIN);
+  box(context, 7, 10, 10, 1, SKIN_SHADE);
+  box(context, 7, 2, variant === 'builder' ? 4 : 7, 2, colors.hairLight);
+  if (variant === 'builder') box(context, 16, 0, 2, 3, colors.hair);
+  if (variant === 'scout') box(context, 5, 3, 14, 2, DEVICE_LIGHT);
+  if (variant !== 'manager' && variant !== 'checker') {
+    box(context, 8, 8, 1, 1, OUTLINE);
+    box(context, 15, 8, 1, 1, OUTLINE);
+  }
+  drawFrontAccessory(context, variant);
 }
 
 function drawFacingSide(
   context: CanvasRenderingContext2D,
   frame: number,
   direction: -1 | 1,
+  variant: CharacterVariant,
 ): void {
-  const legs = legOffsets(frame);
-  box(context, 12, 30 + legs.left, 5, 8 - legs.left, TROUSER);
-  box(context, 15, 30 + legs.right, 5, 8 - legs.right, TROUSER_SHADE);
-  box(context, 12, 36, 5, 2, SHOE);
-  outlinedBox(context, 9, 18, 14, 13, SHIRT_LIGHT);
-  box(context, 9, 28, 14, 3, SHIRT_DARK);
-  // 前に出したうでは、進む向き側にだけ見えます。
-  outlinedBox(context, direction === 1 ? 22 : 7, 19 + (frame === 1 ? -1 : 0), 3, 9, SKIN);
-  outlinedBox(context, 9, 4, 14, 15, HAIR);
-  // よこ顔：ほおが見えるのは進む向き側だけ。
-  const cheekX = direction === 1 ? 18 : 10;
-  box(context, cheekX, 11, 5, 8, SKIN);
-  box(context, cheekX, 17, 5, 2, SKIN_SHADE);
-  box(context, direction === 1 ? 20 : 11, 13, 2, 2, OUTLINE);
-  box(context, 10, 5, 7, 2, HAIR_LIGHT);
+  const colors = VARIANT_COLORS[variant];
+  drawSideLegs(context, frame, direction);
+  outlinedBox(context, 7, 11, 10, 9, SHIRT_LIGHT);
+  box(context, 7, 18, 10, 2, SHIRT_DARK);
+  const armX = direction === 1 ? 17 : 5;
+  const armSwing = frame === 1 ? -2 : frame === 3 ? 2 : 0;
+  outlinedBox(context, armX, 12 + armSwing, 2, 7, SKIN);
+  outlinedBox(context, 6, 1, 12, 10, colors.hair);
+  const cheekX = direction === 1 ? 13 : 7;
+  box(context, cheekX, 5, 5, 6, SKIN);
+  box(context, cheekX, 10, 5, 1, SKIN_SHADE);
+  box(context, direction === 1 ? 15 : 8, 8, 1, 1, OUTLINE);
+  box(context, 7, 2, 6, 2, colors.hairLight);
+  if (variant === 'builder') box(context, direction === 1 ? 16 : 6, 0, 2, 3, colors.hair);
+  if (variant === 'scout') box(context, 6, 3, 12, 2, DEVICE_LIGHT);
+  if (variant === 'manager') {
+    const deviceX = direction === 1 ? 7 : 16;
+    box(context, deviceX, 5, 2, 5, DEVICE);
+    box(context, deviceX, 6, 2, 2, GLASSES);
+    box(context, direction === 1 ? 15 : 7, 8, 3, 1, GLASSES);
+  } else if (variant === 'scout') {
+    box(context, direction === 1 ? 8 : 14, 12, 2, 8, DEVICE);
+  } else if (variant === 'builder') {
+    box(context, 7, 18, 10, 2, DEVICE);
+  } else {
+    box(context, direction === 1 ? 14 : 7, 7, 4, 2, DEVICE);
+  }
 }
 
-function drawFacingUp(context: CanvasRenderingContext2D, frame: number): void {
-  const legs = legOffsets(frame);
-  box(context, 10, 30 + legs.left, 5, 8 - legs.left, TROUSER);
-  box(context, 17, 30 + legs.right, 5, 8 - legs.right, TROUSER);
-  box(context, 10, 36, 5, 2, SHOE);
-  box(context, 17, 36, 5, 2, SHOE);
-  outlinedBox(context, 7, 18, 18, 13, SHIRT_LIGHT);
-  box(context, 7, 28, 18, 3, SHIRT_DARK);
-  outlinedBox(context, 4, 19, 3, 9, SKIN);
-  outlinedBox(context, 25, 19, 3, 9, SKIN);
-  // 背面は後頭部だけ。顔のパーツは描きません。
-  outlinedBox(context, 8, 4, 16, 15, HAIR);
-  box(context, 11, 7, 10, 9, HAIR_LIGHT);
-  box(context, 10, 17, 12, 2, SKIN_SHADE);
+function drawFacingUp(
+  context: CanvasRenderingContext2D,
+  frame: number,
+  variant: CharacterVariant,
+): void {
+  const colors = VARIANT_COLORS[variant];
+  const arms = armOffsets(frame);
+  drawLegs(context, frame);
+  outlinedBox(context, 5, 11, 14, 9, SHIRT_LIGHT);
+  box(context, 5, 18, 14, 2, SHIRT_DARK);
+  outlinedBox(context, 3, 12 + arms.left, 2, 7, SKIN);
+  outlinedBox(context, 19, 12 + arms.right, 2, 7, SKIN);
+  outlinedBox(context, 5, 1, 14, 10, colors.hair);
+  box(context, 8, 3, 8, 6, colors.hairLight);
+  box(context, 7, 10, 10, 1, SKIN_SHADE);
+  if (variant === 'manager') {
+    box(context, 5, 12, 14, 2, SHIRT_DARK);
+    box(context, 18, 5, 2, 4, DEVICE);
+  } else if (variant === 'scout') {
+    box(context, 5, 3, 14, 2, DEVICE_LIGHT);
+    box(context, 14, 12, 4, 7, DEVICE);
+  } else if (variant === 'builder') {
+    box(context, 5, 18, 14, 2, DEVICE);
+    box(context, 16, 0, 2, 3, colors.hair);
+  } else {
+    box(context, 6, 13, 12, 1, SHIRT_DARK);
+  }
 }
 
-function drawFrame(context: CanvasRenderingContext2D, facing: Facing, frame: number): void {
-  if (facing === 'down') drawFacingDown(context, frame);
-  else if (facing === 'up') drawFacingUp(context, frame);
-  else drawFacingSide(context, frame, facing === 'right' ? 1 : -1);
+function drawFrame(
+  context: CanvasRenderingContext2D,
+  facing: Facing,
+  frame: number,
+  variant: CharacterVariant,
+): void {
+  if (facing === 'down') drawFacingDown(context, frame, variant);
+  else if (facing === 'up') drawFacingUp(context, frame, variant);
+  else drawFacingSide(context, frame, facing === 'right' ? 1 : -1, variant);
 }
 
-/** 手続き描画で 192×256 のマスターシートを 1枚こしらえます。 */
-function drawProceduralMaster(context: CanvasRenderingContext2D): void {
+/** 手続き描画で 256×256 のマスターシートを 1枚こしらえます。 */
+function drawProceduralMaster(
+  context: CanvasRenderingContext2D,
+  variant: CharacterVariant,
+): void {
   facings.forEach((facing, rowIndex) => {
     for (let frame = 0; frame < FRAMES_PER_FACING; frame += 1) {
       context.save();
@@ -184,7 +319,7 @@ function drawProceduralMaster(context: CanvasRenderingContext2D): void {
         frame * FRAME_WIDTH + ART_OFFSET_X,
         rowIndex * FRAME_HEIGHT + ART_OFFSET_Y,
       );
-      drawFrame(context, facing, frame);
+      drawFrame(context, facing, frame, variant);
       context.restore();
     }
   });
@@ -237,8 +372,8 @@ function buildShirtMap(palette: SheetPalette, color: number): Map<number, number
 }
 
 /** マスターシートの服の色だけを差し替えた ImageData を返します。 */
-function swappedSheet(color: number): ImageData | null {
-  const master = ensureMaster();
+function swappedSheet(variant: CharacterVariant, color: number): ImageData | null {
+  const master = ensureMaster(variant);
   if (!master) return null;
 
   const copy = new ImageData(
@@ -265,18 +400,22 @@ function swappedSheet(color: number): ImageData | null {
 // マスターシートの用意（同期の仮絵 → 非同期で本物に差し替え）
 // ---------------------------------------------------------------------------
 
-let masterData: ImageData | null = null;
-let artRequested = false;
+const proceduralMasters = new Map<CharacterVariant, ImageData>();
+const artMasters = new Map<CharacterVariant, ImageData>();
+const artRequested = new Set<CharacterVariant>();
 let sheetVersion = 0;
 const versionListeners = new Set<() => void>();
 
 /**
  * マスターシートを用意します。最初の呼び出しでは手続き描画の仮絵を
- * **同期で**返し、`AGENT_SHEET_PNG` があれば裏で読み込んで差し替えます。
+ * **同期で**返し、Manager PNG があれば裏で読み込んで差し替えます。
  * 名簿（React 側）が同期で絵を欲しがるので、この二段構えにしています。
  */
-function ensureMaster(): ImageData | null {
-  if (masterData) return masterData;
+function ensureMaster(variant: CharacterVariant): ImageData | null {
+  const artMaster = artMasters.get(variant);
+  if (artMaster) return artMaster;
+  const existing = proceduralMasters.get(variant);
+  if (existing) return existing;
 
   const canvas = document.createElement('canvas');
   canvas.width = SHEET_WIDTH;
@@ -284,17 +423,18 @@ function ensureMaster(): ImageData | null {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return null;
   context.imageSmoothingEnabled = false;
-  drawProceduralMaster(context);
-  masterData = context.getImageData(0, 0, SHEET_WIDTH, SHEET_HEIGHT);
+  drawProceduralMaster(context, variant);
+  const master = context.getImageData(0, 0, SHEET_WIDTH, SHEET_HEIGHT);
+  proceduralMasters.set(variant, master);
 
-  loadArtMaster();
-  return masterData;
+  loadArtMaster(variant);
+  return master;
 }
 
 /** 本物のドット絵シートを読み込み、間に合ったところで丸ごと差し替えます。 */
-function loadArtMaster(): void {
-  if (artRequested || !AGENT_SHEET_PNG) return;
-  artRequested = true;
+function loadArtMaster(variant: CharacterVariant): void {
+  if (variant !== 'manager' || artRequested.has(variant) || !MANAGER_SHEET_PNG) return;
+  artRequested.add(variant);
 
   const image = new Image();
   image.onload = () => {
@@ -312,19 +452,19 @@ function loadArtMaster(): void {
     if (!context) return;
     context.imageSmoothingEnabled = false;
     context.drawImage(image, 0, 0);
-    masterData = context.getImageData(0, 0, SHEET_WIDTH, SHEET_HEIGHT);
+    artMasters.set(variant, context.getImageData(0, 0, SHEET_WIDTH, SHEET_HEIGHT));
     onMasterChanged();
   };
   image.onerror = () => {
     console.warn('[characterSheet] シートを読み込めませんでした。仮キャラのまま続行します。');
   };
-  image.src = AGENT_SHEET_PNG;
+  image.src = MANAGER_SHEET_PNG;
 }
 
 /** 絵が差し替わったら、アトラスも名簿のアイコンも作り直します。 */
 function onMasterChanged(): void {
   portraitCache.clear();
-  for (const [color, slot] of slots) paintSlot(slot, color);
+  for (const [slot, details] of slotDetails) paintSlot(slot, details.variant, details.color);
   atlasTexture?.refresh();
   sheetVersion += 1;
   for (const listener of versionListeners) listener();
@@ -347,8 +487,14 @@ export function getSheetVersion(): number {
 // 共有アトラス
 // ---------------------------------------------------------------------------
 
-/** 服の色 → アトラスの枠番号。 */
-const slots = new Map<number, number>();
+interface SlotDetails {
+  variant: CharacterVariant;
+  color: number;
+}
+
+/** キャラ型と服色の組み合わせ → アトラスの枠番号。 */
+const slots = new Map<string, number>();
+const slotDetails = new Map<number, SlotDetails>();
 let atlasCanvas: HTMLCanvasElement | null = null;
 let atlasTexture: Phaser.Textures.CanvasTexture | null = null;
 
@@ -367,19 +513,23 @@ export function animationKey(slot: number, facing: Facing, moving: boolean): str
   return `agent-${slot}-${moving ? 'walk' : 'idle'}-${facing}`;
 }
 
+function slotKey(variant: CharacterVariant, color: number): string {
+  return `${variant}:${color}`;
+}
+
 /** 枠 1つぶんを、服の色を差し替えたうえでアトラスへ焼きます。 */
-function paintSlot(slot: number, color: number): void {
+function paintSlot(slot: number, variant: CharacterVariant, color: number): void {
   if (!atlasCanvas) return;
   const context = atlasCanvas.getContext('2d');
   if (!context) return;
-  const sheet = swappedSheet(color);
+  const sheet = swappedSheet(variant, color);
   if (!sheet) return;
   const { x, y } = slotOrigin(slot);
   // putImageData は合成せずに置き換えるので、先に消す必要はありません。
   context.putImageData(sheet, x, y);
 }
 
-/** 枠 1つぶんの 12コマを、テクスチャのフレームとして登録します。 */
+/** 枠 1つぶんの 16コマを、テクスチャのフレームとして登録します。 */
 function addSlotFrames(slot: number): void {
   if (!atlasTexture) return;
   const origin = slotOrigin(slot);
@@ -406,7 +556,7 @@ function ensureAtlas(scene: Phaser.Scene): void {
     atlasCanvas.height = ATLAS_HEIGHT;
     const context = atlasCanvas.getContext('2d');
     if (context) context.imageSmoothingEnabled = false;
-    for (const [color, slot] of slots) paintSlot(slot, color);
+    for (const [slot, details] of slotDetails) paintSlot(slot, details.variant, details.color);
   }
 
   // シーンが作り直されるとテクスチャは破棄されるので、そのつど登録し直します。
@@ -419,19 +569,20 @@ function ensureAtlas(scene: Phaser.Scene): void {
   atlasTexture = scene.textures.get(ATLAS_KEY) as Phaser.Textures.CanvasTexture;
 }
 
-function allocateSlot(color: number): number {
+function allocateSlot(key: string, variant: CharacterVariant, color: number): number {
   if (slots.size < MAX_SLOTS) {
     const slot = slots.size;
-    slots.set(color, slot);
+    slots.set(key, slot);
+    slotDetails.set(slot, { variant, color });
     addSlotFrames(slot);
     return slot;
   }
-  // 枠を使いきったら、一番古い色の枠を明け渡します。社員が 16人を超えて
-  // なお全員の服の色が違う、というときだけの保険です。
+  // 枠を使いきったら、一番古い組み合わせの枠を明け渡します。
   const [oldest] = slots.keys();
   const slot = slots.get(oldest) as number;
   slots.delete(oldest);
-  slots.set(color, slot);
+  slots.set(key, slot);
+  slotDetails.set(slot, { variant, color });
   return slot;
 }
 
@@ -439,13 +590,19 @@ function allocateSlot(color: number): number {
  * 服の色ごとに、アトラスの枠とアニメを 1度だけ用意します。
  * 返すのは枠番号で、テクスチャはいつでも `ATLAS_KEY` です。
  */
-export function ensureCharacterSheet(scene: Phaser.Scene, color: number): number {
+export function ensureCharacterSheet(
+  scene: Phaser.Scene,
+  color: number,
+  duty: AgentDuty,
+): number {
   ensureAtlas(scene);
 
-  const existing = slots.get(color);
-  const slot = existing ?? allocateSlot(color);
+  const variant = characterVariantForDuty(duty);
+  const key = slotKey(variant, color);
+  const existing = slots.get(key);
+  const slot = existing ?? allocateSlot(key, variant, color);
   if (existing === undefined) {
-    paintSlot(slot, color);
+    paintSlot(slot, variant, color);
     atlasTexture?.refresh();
   }
 
@@ -454,12 +611,13 @@ export function ensureCharacterSheet(scene: Phaser.Scene, color: number): number
     if (!scene.anims.exists(walk)) {
       scene.anims.create({
         key: walk,
-        // 0（直立）を挟むと、2コマでもちゃんと歩いて見えます。
-        frames: [1, 0, 2, 0].map((frame) => ({
+        // 大股→沈み込み→反対の大股→沈み込み、で足運びを明確にします。
+        frames: [1, 2, 3, 2].map((frame) => ({
           key: ATLAS_KEY,
           frame: frameName(slot, facing, frame),
         })),
-        frameRate: 7,
+        // 260ms/タイルに対して250ms/片足。1マスにつき1回だけ踏み出します。
+        frameRate: 8,
         repeat: -1,
       });
     }
@@ -481,7 +639,7 @@ export function ensureCharacterSheet(scene: Phaser.Scene, color: number): number
 // 名簿用の 1コマ書き出し
 // ---------------------------------------------------------------------------
 
-const portraitCache = new Map<number, string>();
+const portraitCache = new Map<string, string>();
 
 /**
  * 名簿のアイコンの大きさ。64×64 をそのまま縮めるとドットが間引かれて
@@ -498,11 +656,13 @@ const PORTRAIT_CROP_Y = 2;
  * フロアのキャラとまったく同じマスターシートから切り出すので、
  * 絵を差し替えれば名簿のアイコンも自動で追従します。色ごとに一度だけ作ります。
  */
-export function characterPortrait(color: number): string {
-  const cached = portraitCache.get(color);
+export function characterPortrait(color: number, duty: AgentDuty): string {
+  const variant = characterVariantForDuty(duty);
+  const key = slotKey(variant, color);
+  const cached = portraitCache.get(key);
   if (cached !== undefined) return cached;
 
-  const sheet = swappedSheet(color);
+  const sheet = swappedSheet(variant, color);
   if (!sheet) return '';
 
   const canvas = document.createElement('canvas');
@@ -522,6 +682,6 @@ export function characterPortrait(color: number): string {
   );
 
   const url = canvas.toDataURL('image/png');
-  portraitCache.set(color, url);
+  portraitCache.set(key, url);
   return url;
 }
