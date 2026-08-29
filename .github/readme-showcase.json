@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "readme": "README.md",
+  "start": {
+    "command": "npm start -- -- --remote-debugging-port=9333",
+    "readyUrl": "http://127.0.0.1:9333/json",
+    "timeoutSeconds": 120
+  },
+  "screenshots": [
+    {
+      "id": "office-command-center",
+      "path": "docs/screenshots/office-command-center.png",
+      "url": "http://localhost:3000/main_window/index.html",
+      "alt": "Pixel Codexのピクセルオフィスで複数のAIエージェントが働く開発フロア",
+      "viewport": { "width": 1600, "height": 900 },
+      "exactDimensions": { "width": 1600, "height": 900 },
+      "fullPage": false,
+      "waitFor": ".office-canvas canvas",
+      "steps": [
+        { "action": "wait", "milliseconds": 900 },
+        { "action": "run", "command": "node tools/capture-readme.mjs office" }
+      ]
+    },
+    {
+      "id": "accounting-report",
+      "path": "docs/screenshots/accounting-report.png",
+      "url": "http://localhost:3000/main_window/index.html",
+      "alt": "Pixel Codexの発生経費明細でトークン使用量と料金を確認する会計画面",
+      "viewport": { "width": 1600, "height": 900 },
+      "exactDimensions": { "width": 1600, "height": 900 },
+      "fullPage": false,
+      "waitFor": "#payroll-title",
+      "steps": [
+        { "action": "click", "target": "発生経費メーター" },
+        { "action": "wait", "milliseconds": 900 },
+        { "action": "run", "command": "node tools/capture-readme.mjs accounting" }
+      ]
+    }
+  ],
+  "checks": [
+    "npm run typecheck",
+    "npm run lint"
+  ]
+}

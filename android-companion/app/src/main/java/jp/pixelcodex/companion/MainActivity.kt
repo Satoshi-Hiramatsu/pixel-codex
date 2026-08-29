@@ -3,6 +3,7 @@ package jp.pixelcodex.companion
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.BitmapFactory
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -20,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -62,6 +64,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.journeyapps.barcodescanner.ScanContract
@@ -123,11 +126,14 @@ private fun CompanionApp(
     var previewViewport by remember { mutableStateOf("mobile") }
     var statusExpanded by remember { mutableStateOf(false) }
     var reportOpen by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
     var tab by remember {
         mutableStateOf(if (initialRelayUrl.isBlank()) CompanionTab.SETTINGS else CompanionTab.CONSOLE)
     }
     val online = state.phase == ConnectionPhase.ONLINE
     val busy = online || state.phase == ConnectionPhase.CONNECTING
+    // PCが手を止めてこちらの返事を待っている状態。作業中とは見分けがつくようにします。
+    val waitingForReply = state.approvalPending || state.questionPending
 
     fun saveConnection(url: String, id: String) {
         preferences.edit().putString("relayUrl", url).putString("hostId", id).apply()
@@ -242,6 +248,20 @@ private fun CompanionApp(
         }
     }
 
+    /**
+     * 承認や質問が届いたら、音を鳴らして画面のいちばん上まで戻します。PCが待っている間も
+     * 端末の見出しは「作業中」のままなので、目で見て気づくのが難しいためです。
+     * 端末の通知音量に従うので、消音にしていれば鳴りません。
+     */
+    LaunchedEffect(state.approval?.requestId, state.question?.requestId) {
+        if (state.approval == null && state.question == null) return@LaunchedEffect
+        runCatching {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            RingtoneManager.getRingtone(context, uri)?.play()
+        }
+        scrollState.animateScrollTo(0)
+    }
+
     LaunchedEffect(autoConnect, initialRelayUrl, initialHostId) {
         if (autoConnect && initialRelayUrl.isNotBlank() && initialHostId.isNotBlank()) {
             saveConnection(initialRelayUrl, initialHostId)
@@ -254,7 +274,7 @@ private fun CompanionApp(
             modifier = Modifier
                 .fillMaxSize()
                 .safeDrawingPadding()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -264,11 +284,27 @@ private fun CompanionApp(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("PIXEL CODEX", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-                ActivityLamp(working = state.working, online = online)
+                ActivityLamp(working = state.working, waiting = waitingForReply, online = online)
             }
             Text(
-                if (state.working) "作業中" else "待機中",
-                color = MaterialTheme.colorScheme.secondary,
+                when {
+                    waitingForReply -> "あなたの返事待ち"
+                    state.working -> "作業中"
+                    else -> "待機中"
+                },
+                color = if (waitingForReply) Color(0xFFE1775B) else MaterialTheme.colorScheme.secondary,
+                fontWeight = if (waitingForReply) FontWeight.Black else FontWeight.Normal,
+            )
+
+            // 返事待ちはどのタブにいても最初に目に入る位置へ出します。指示欄の下に置くと
+            // スクロールしないと見えず、PCが止まったまま気づけないためです。
+            PendingPrompts(
+                state = state,
+                online = online,
+                onDecideApproval = { requestId, accept -> client.sendApproval(requestId, accept) },
+                onAnswerQuestion = { requestId, answers ->
+                    client.sendQuestionAnswers(requestId, answers)
+                },
             )
 
             TabSwitch(tab = tab, onSelect = { tab = it })
@@ -297,10 +333,6 @@ private fun CompanionApp(
                     onInstructionChange = { instruction = it },
                     onSend = { if (client.sendInstruction(instruction)) instruction = "" },
                     onOpenSettings = { tab = CompanionTab.SETTINGS },
-                    onDecideApproval = { requestId, accept -> client.sendApproval(requestId, accept) },
-                    onAnswerQuestion = { requestId, answers ->
-                        client.sendQuestionAnswers(requestId, answers)
-                    },
                 )
 
                 CompanionTab.ROADMAP -> RoadmapTab(
@@ -383,7 +415,7 @@ private fun CompanionApp(
 
 @Composable
 private fun TabSwitch(tab: CompanionTab, onSelect: (CompanionTab) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         TabButton("Codex", tab == CompanionTab.CONSOLE, Modifier.weight(1f)) {
             onSelect(CompanionTab.CONSOLE)
         }
@@ -399,13 +431,35 @@ private fun TabSwitch(tab: CompanionTab, onSelect: (CompanionTab) -> Unit) {
     }
 }
 
+/**
+ * 4つ並べても1行に収まるよう、ボタンの左右余白を削って文字の折り返しを止めています。
+ * 既定の余白のままだと「Codex」が2行になり、見出しの高さが倍になってしまいます。
+ */
 @Composable
 private fun TabButton(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val shape = modifier.height(40.dp)
+    val contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
     if (selected) {
-        Button(modifier = modifier, onClick = onClick) { Text(label, fontWeight = FontWeight.Black) }
+        Button(modifier = shape, onClick = onClick, contentPadding = contentPadding) {
+            TabLabel(label, selected = true)
+        }
     } else {
-        OutlinedButton(modifier = modifier, onClick = onClick) { Text(label) }
+        OutlinedButton(modifier = shape, onClick = onClick, contentPadding = contentPadding) {
+            TabLabel(label, selected = false)
+        }
     }
+}
+
+@Composable
+private fun TabLabel(label: String, selected: Boolean) {
+    Text(
+        label,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = if (selected) FontWeight.Black else FontWeight.Normal,
+    )
 }
 
 @Composable
@@ -416,8 +470,6 @@ private fun ConsoleTab(
     onInstructionChange: (String) -> Unit,
     onSend: () -> Unit,
     onOpenSettings: () -> Unit,
-    onDecideApproval: (String, Boolean) -> Unit,
-    onAnswerQuestion: (String, Map<String, String>) -> Unit,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF203F38))) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -454,6 +506,19 @@ private fun ConsoleTab(
         }
     }
 
+}
+
+/**
+ * PCが返事を待っている間だけ出る一群。見出しのすぐ下に置き、タブを切り替えても
+ * 消えないようにしています。
+ */
+@Composable
+private fun PendingPrompts(
+    state: RemoteUiState,
+    online: Boolean,
+    onDecideApproval: (String, Boolean) -> Unit,
+    onAnswerQuestion: (String, Map<String, String>) -> Unit,
+) {
     state.approval?.let { approval ->
         ApprovalCard(approval = approval, enabled = online, onDecide = onDecideApproval)
     }
@@ -753,9 +818,11 @@ private fun StatusCard(
 /**
  * 見出しの横のランプ。PCが手を動かしている間だけゆっくり明滅させ、止まっていれば
  * 消灯します。文字を読まなくても動いているかどうかが分かるようにするためです。
+ * 返事を待たれているときは色を変えます。同じ金色のままだと作業中と見分けがつかず、
+ * 待たれていることに気づかないまま放置してしまうためです。
  */
 @Composable
-private fun ActivityLamp(working: Boolean, online: Boolean) {
+private fun ActivityLamp(working: Boolean, waiting: Boolean, online: Boolean) {
     val transition = rememberInfiniteTransition(label = "activity")
     val pulse by transition.animateFloat(
         initialValue = 0.25f,
@@ -767,6 +834,7 @@ private fun ActivityLamp(working: Boolean, online: Boolean) {
         label = "pulse",
     )
     val color = when {
+        waiting -> Color(0xFFE1775B).copy(alpha = pulse)
         working -> Color(0xFFF0BD55).copy(alpha = pulse)
         online -> Color(0xFF70CA8A).copy(alpha = 0.30f)
         else -> Color(0xFF8A979B).copy(alpha = 0.22f)

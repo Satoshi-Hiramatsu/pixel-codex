@@ -1,8 +1,54 @@
 # Pixel Codex
 
-Codexの親エージェントとサブエージェントを、ピクセルオフィス上で可視化・操作するWindows向けデスクトップクライアントです。
+<div align="center">
+  <img src="assets/branding/pixel-codex-icon.png" width="96" alt="Pixel Codexのアプリアイコン">
+  <h3>AIエージェントの仕事場を、ゲームのように経営する。</h3>
+  <p>Codexの親エージェントとサブエージェントを、ひとつのピクセルオフィスで可視化・操作するWindows向けデスクトップクライアントです。</p>
+  <p>
+    <img alt="Version 1.4.7" src="https://img.shields.io/badge/version-1.4.7-f0bd55?style=flat-square">
+    <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%2F%2011-357ec7?style=flat-square&logo=windows11&logoColor=white">
+    <img alt="Electron 43.2" src="https://img.shields.io/badge/Electron-43.2-47848f?style=flat-square&logo=electron&logoColor=white">
+    <img alt="Phaser 4.2" src="https://img.shields.io/badge/Phaser-4.2-6554c0?style=flat-square">
+    <img alt="Japanese UI" src="https://img.shields.io/badge/UI-日本語-e1775b?style=flat-square">
+  </p>
+  <p>
+    <a href="#オフィスの1日がそのまま開発の進み方になる">見どころ</a> ・
+    <a href="#まず動かす">クイックスタート</a> ・
+    <a href="#画面の見かた">画面ガイド</a> ・
+    <a href="docs/pc-requirements.md">動作環境</a> ・
+    <a href="#更新履歴">更新履歴</a>
+  </p>
+</div>
 
-バージョン **1.4.7**。変更の履歴は[更新履歴](#更新履歴)にまとめています。
+![Pixel Codexのピクセルオフィスで7人のAIエージェントが役割別に働く開発フロア](docs/screenshots/office-command-center.png)
+
+> [!NOTE]
+> スクリーンショットはCodex未接続でも使えるデモ表示です。実在の作業フォルダや会計情報は含みません。会計画面の数値はREADME撮影用の固定デモデータです。
+
+## オフィスの1日が、そのまま開発の進み方になる
+
+| 出勤と配属 | 進行と意思決定 | 経費と成果 |
+| --- | --- | --- |
+| 11担当それぞれの専用キャラクターが、企画室・資料室・開発室・テストラボなど役割に合った場所へ移動します。 | 統括責任者のロードマップ、会話、承認待ち、各担当の現在の仕事を同じ画面で追えます。 | トークンを円換算した発生経費、社員別の働き、HP、成果物、会計報告をプロジェクトの記録として確認できます。 |
+
+### 会計もゲーム画面の中で
+
+![Pixel Codexの発生経費明細でトークン使用量と社員別コストを確認する会計画面](docs/screenshots/accounting-report.png)
+
+<p align="center"><sub>入力・キャッシュ・出力の内訳から、担当別コスト、契約プラン比較までをひとつの会計ウィンドウに集約。</sub></p>
+
+## まず動かす
+
+Windows 10 / 11、Node.js 20以降、ログイン済みのCodex CLIを用意します。Gitはセーブ／ロード機能を使う場合だけ必要です。
+
+```powershell
+git clone https://github.com/Satoshi-Hiramatsu/pixel-codex.git
+cd pixel-codex
+npm install
+npm start
+```
+
+詳しい条件と配布版の注意事項は[動作環境](docs/pc-requirements.md)を参照してください。バージョンは **1.4.7**、変更の履歴は[更新履歴](#更新履歴)にまとめています。
 
 ## 現在のMVP
 

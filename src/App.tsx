@@ -1698,6 +1698,9 @@ export function App(): React.JSX.Element {
       messages[messages.length - 1]?.text,
       communicationPolicy,
     );
+    // 承認や質問を出している間は手が止まっているので、作業中とは分けて伝えます。
+    // ここを一緒にすると端末は「作業中」と出続け、待たれていることに気づけません。
+    const waitingForReply = Boolean(approval) || Boolean(questionRequest);
     void window.pixelCodex.updateRemoteState({
       workspace,
       connection,
@@ -1706,7 +1709,8 @@ export function App(): React.JSX.Element {
       // 端末には日本語のまま出したいので、内部の状態名ではなく表示用の言い方を送ります。
       rootStatus: rootAgent ? statusLabels[rootAgent.status] : undefined,
       rootName: rootAgent?.name,
-      busy: Boolean(rootAgent && !['idle', 'done', 'error'].includes(rootAgent.status)),
+      busy: Boolean(rootAgent && !['idle', 'done', 'error'].includes(rootAgent.status))
+        && !waitingForReply,
       pendingInstructions: remoteQueue.length,
       approvalPending: Boolean(approval),
       questionPending: Boolean(questionRequest),
