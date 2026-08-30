@@ -5,13 +5,14 @@
   <h3>AIエージェントの仕事場を、ゲームのように経営する。</h3>
   <p>Codexの親エージェントとサブエージェントを、ひとつのピクセルオフィスで可視化・操作するWindows向けデスクトップクライアントです。</p>
   <p>
-    <img alt="Version 1.4.7" src="https://img.shields.io/badge/version-1.4.7-f0bd55?style=flat-square">
+    <img alt="Version 1.5.1" src="https://img.shields.io/badge/version-1.5.1-f0bd55?style=flat-square">
     <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%20%2F%2011-357ec7?style=flat-square&logo=windows11&logoColor=white">
     <img alt="Electron 43.2" src="https://img.shields.io/badge/Electron-43.2-47848f?style=flat-square&logo=electron&logoColor=white">
     <img alt="Phaser 4.2" src="https://img.shields.io/badge/Phaser-4.2-6554c0?style=flat-square">
     <img alt="Japanese UI" src="https://img.shields.io/badge/UI-日本語-e1775b?style=flat-square">
   </p>
   <p>
+    <a href="https://github.com/Satoshi-Hiramatsu/pixel-codex/releases/latest">ダウンロード</a> ・
     <a href="#オフィスの1日がそのまま開発の進み方になる">見どころ</a> ・
     <a href="#まず動かす">クイックスタート</a> ・
     <a href="#画面の見かた">画面ガイド</a> ・
@@ -39,7 +40,19 @@
 
 ## まず動かす
 
-Windows 10 / 11、Node.js 20以降、ログイン済みのCodex CLIを用意します。Gitはセーブ／ロード機能を使う場合だけ必要です。
+Windows 10 / 11と、ログイン済みのCodex CLIを用意します。Gitはセーブ／ロード機能を使う場合だけ必要です。
+
+### 配布 ZIP を使う
+
+1. [GitHub Releasesの最新版](https://github.com/Satoshi-Hiramatsu/pixel-codex/releases/latest)から`Pixel-Codex-windows-x64-1.5.1.zip`をダウンロードします。
+2. ZIPを任意のフォルダへ展開します。
+3. 展開先の`PixelCodex.exe`を起動します。
+
+コード署名をしていないため、初回はWindows SmartScreenが表示されることがあります。その場合は`詳細情報` → `実行`で進めてください。配布ZIPにはNode.jsの導入や`npm install`は不要ですが、Codex CLIは同梱していません。
+
+### ソースから動かす
+
+Node.js 20以降を用意して、次を実行します。
 
 ```powershell
 git clone https://github.com/Satoshi-Hiramatsu/pixel-codex.git
@@ -48,7 +61,7 @@ npm install
 npm start
 ```
 
-詳しい条件と配布版の注意事項は[動作環境](docs/pc-requirements.md)を参照してください。バージョンは **1.4.7**、変更の履歴は[更新履歴](#更新履歴)にまとめています。
+詳しい条件と配布版の注意事項は[動作環境](docs/pc-requirements.md)を参照してください。バージョンは **1.5.1**、変更の履歴は[更新履歴](#更新履歴)にまとめています。
 
 ## 現在のMVP
 
@@ -386,12 +399,24 @@ Windows Defender Firewallが確認を表示した場合は、プライベート�
 
 ## 配布物
 
-`npm run make`後、WindowsインストーラーとZIPが`out/make/`へ生成されます。コード署名と正式アイコンはリリース前に別途設定してください。
+[GitHub Releases](https://github.com/Satoshi-Hiramatsu/pixel-codex/releases/latest)で、展開してすぐ起動できるWindows x64版ZIPを公開しています。
+
+開発者が`npm run make`を実行すると、WindowsインストーラーとZIPが`out/make/`へ生成されます。現在の配布物はコード署名をしていないため、初回起動時にSmartScreenが表示されることがあります。
 
 配布先のPCに必要な条件は[docs/pc-requirements.md](docs/pc-requirements.md)にまとめています。
-V1.4.7の変更点と確認項目は[V1.4.7 リリースノート](docs/RELEASE_V1.4.7.md)にまとめています。
+V1.5.1の変更点と確認項目は[V1.5.1 リリースノート](docs/RELEASE_V1.5.1.md)にまとめています。
 
 ## 更新履歴
+
+### V1.5.1 — 公開用Windows ZIP
+
+最新のデスクトップ版を、GitHub Releasesから誰でも取得できるWindows x64向けZIPとして公開しました。V1.5.0までの画面・Android連携改善を含みます。
+
+- **ZIPを展開して起動** … インストーラーを使わず、展開先の`PixelCodex.exe`から起動できます
+- **返事待ちを見逃しにくく** … Androidコンパニオンで承認・質問待ちを作業中と区別し、通知音と画面上部への表示で知らせます
+- **GitHubの案内を整理** … READMEから最新版のダウンロード先、利用手順、動作条件へ直接進めるようにしました
+
+詳細は[V1.5.1 リリースノート](docs/RELEASE_V1.5.1.md)を参照してください。
 
 ### V1.4.7 — 全11担当の専用キャラクター化
 
